@@ -1,8 +1,14 @@
-# build artifacts and test outputs (not committed)
+# build artifacts (not committed) -- rebuild with the documented cmake command
 openwq_py*.so
 _deps/
 build/
+build_py.log
 __pycache__/
 *.pyc
-# deep-test case folders (openWQ config + HDF5 outputs are generated)
+# openWQ inputs/outputs are GENERATED, never committed: regenerate them with
+#   python src/lisflood/openwq/model_config_lisflood_nitrogen.py
+tests/_case*/
+tests/_run_*/
 tests/_ncase*/
+tests/_scale_*/
+tests/_results_*.csv

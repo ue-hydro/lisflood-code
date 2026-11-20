@@ -37,6 +37,10 @@ PYBIND11_MODULE(openwq_py, m) {
              py::arg("dst"), py::arg("ix_r"), py::arg("iy_r"), py::arg("iz_r"),
              py::arg("wflux_m3"), py::arg("wmass_src_m3"),
              py::arg("year"), py::arg("month"), py::arg("day"), py::arg("hour") = 0, py::arg("minute") = 0)
+        .def("move_array", &OpenWQPyHost::move_array,
+             py::arg("src"), py::arg("dst"),
+             py::arg("wflux_m3"), py::arg("wmass_src_m3"),
+             py::arg("year"), py::arg("month"), py::arg("day"), py::arg("hour") = 0, py::arg("minute") = 0)
         .def("inflow", &OpenWQPyHost::inflow,
              py::arg("ewf_name"), py::arg("dst"), py::arg("ix_r"), py::arg("iy_r"), py::arg("iz_r"),
              py::arg("wflux_m3"),

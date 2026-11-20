@@ -28,16 +28,30 @@ class FakeHost:
         self.compartments.append(name)
         return len(self.compartments) - 1
 
+    def add_ext_flux(self, name, nx, ny=1, nz=1):
+        self.ext_fluxes = getattr(self, "ext_fluxes", []) + [name]
+        return len(self.ext_fluxes) - 1
+
+    def add_depend(self, name, nx, ny=1, nz=1):
+        self.depends = getattr(self, "depends", []) + [name]
+        return len(self.depends) - 1
+
+    def set_depend_array(self, idep, arr):
+        self.depend_values = getattr(self, "depend_values", {})
+        self.depend_values[idep] = np.asarray(arr, dtype=float).copy()
+
     def init(self):
         self.inited = True
 
     def set_water_volume_array(self, icmp, arr):
         self.volumes[icmp] = np.asarray(arr, dtype=float).copy()
 
-    def move(self, src, ix_s, iy_s, iz_s, dst, ix_r, iy_r, iz_r,
-             wflux_m3, wmass_src_m3, year, month, day, hour=0, minute=0):
-        # real bridge signature; record (src, dst, cell, wflux, wmass_src)
-        self.moves.append((src, dst, ix_s, float(wflux_m3), float(wmass_src_m3)))
+    def move_array(self, src, dst, wflux_m3, wmass_src_m3,
+                   year, month, day, hour=0, minute=0):
+        # vectorised bridge signature; record (src, dst, flux[], srcvol[])
+        self.moves.append((src, dst,
+                           np.asarray(wflux_m3, dtype=float).copy(),
+                           np.asarray(wmass_src_m3, dtype=float).copy()))
 
     def inflow(self, name, dst, arr):
         self.inflows.append((name, dst, np.asarray(arr, dtype=float).copy()))
@@ -70,14 +84,16 @@ class FakeVar:
         self.LZOutflowToChannel = ones * 0.8
         self.ToChanM3Runoff = ones * 500.0      # already m3
         self.GwLoss = ones * 0.1
+        self.Tavg = ones * 15.0                 # daily mean air temperature (deg C)
         self.CalendarDate = datetime.datetime(2000, 6, 15, 0, 0)
         self.DtSec = 86400.0
 
 
 @pytest.fixture
-def coupled():
+def coupled(tmp_path):
     var = FakeVar(n=5)
-    c = LisfloodOpenWQCoupler(var, "openWQ_master.json", host_factory=FakeHost)
+    c = LisfloodOpenWQCoupler(var, tmp_path / "openWQ_master.json",
+                              host_factory=FakeHost, ext_flux_names=["LOAD"])
     return var, c
 
 
@@ -87,6 +103,47 @@ def test_declares_all_compartments(coupled):
     assert c._host.compartments == COMPARTMENTS
     assert c._host.inited
     assert c._ncells == 5
+
+
+def test_declares_ext_flux_and_temperature_dependency(coupled):
+    var, c = coupled
+    c.step()
+    assert c._host.ext_fluxes == ["LOAD"]
+    assert c._host.depends == ["T"]                      # name used by BGC kinetics
+    np.testing.assert_allclose(c._host.depend_values[c._idep_T], var.Tavg)
+
+
+def test_openwq_calls_run_in_case_folder_and_cwd_restored(tmp_path):
+    seen = []
+
+    class CwdHost(FakeHost):
+        def time_end(self, *a):
+            seen.append(__import__("os").getcwd())
+            super().time_end(*a)
+
+    import os
+    case = tmp_path / "case"
+    case.mkdir()
+    before = os.getcwd()
+    c = LisfloodOpenWQCoupler(FakeVar(n=2), case / "openWQ_master.json",
+                              host_factory=CwdHost, ext_flux_names=[])
+    c.step()
+    assert seen and all(os.path.realpath(p) == os.path.realpath(case) for p in seen)
+    assert os.getcwd() == before                         # LISFLOOD's CWD untouched
+
+
+def test_ext_flux_names_read_from_generated_master(tmp_path):
+    # openWQ generator style: full-line // comments + relative EWF path
+    from lisflood.openwq.coupler import ewf_names_from_master
+    (tmp_path / "openwq_in").mkdir()
+    (tmp_path / "openWQ_master.json").write_text(
+        "\n// generated using OpenWQ's supporting scripts\n{\n"
+        ' "OPENWQ_INPUT": {"EXTERNAL_WATER_FLUXES": {"1": {"LABEL": "x",'
+        ' "FILEPATH": "openwq_in/openWQ_EWF_fixed_value.json"}}}\n}\n')
+    (tmp_path / "openwq_in" / "openWQ_EWF_fixed_value.json").write_text(
+        '// header\n{"METADATA": {"Comment": "c"}, "1": {"DATA_FORMAT": "JSON",'
+        ' "EXTERNAL_INPUTFLUX_NAME": "LOAD", "CHEMICAL_NAME": "NO3-N"}}\n')
+    assert ewf_names_from_master(tmp_path / "openWQ_master.json") == ["LOAD"]
 
 
 def test_prime_seeds_initial_volumes_without_fluxes(coupled):
@@ -106,25 +163,21 @@ def test_step_issues_expected_transfers_with_mm_to_m3(coupled):
     var, c = coupled
     c.step()                      # lazy setup + prime + one step
     I = c._icmp
-    # collect per (src,dst) the per-cell wflux and wmass_src (uniform FakeVar)
-    bysd = {}
-    for s, d, ix, wf, wm in c._host.moves:
-        bysd.setdefault((s, d), []).append((wf, wm))
-    # one scalar move per cell
-    assert len(bysd[(I["SOIL_SUB"], I["UPPER_ZONE"])]) == c._ncells
+    # one move_array call per (src,dst) transfer; arrays over all cells
+    bysd = {(s, d): (wf, wm) for s, d, wf, wm in c._host.moves}
     # vertical soil cascade: wflux = flux(mm) * MMtoM3; wmass_src = source vol
-    wf, wm = bysd[(I["SOIL_SUB"], I["UPPER_ZONE"])][0]
-    assert np.isclose(wf, float(var.SeepSubToGW[0] * var.MMtoM3[0]))
-    assert np.isclose(wm, float(var.W2[0] * var.MMtoM3[0]))        # source = SOIL_SUB vol
+    np.testing.assert_allclose(
+        bysd[(I["SOIL_SUB"], I["UPPER_ZONE"])][0], var.SeepSubToGW * var.MMtoM3)
+    np.testing.assert_allclose(
+        bysd[(I["SOIL_SUB"], I["UPPER_ZONE"])][1], var.W2 * var.MMtoM3)  # src = SOIL_SUB vol
     # interflow UZ -> channel
-    assert np.isclose(bysd[(I["UPPER_ZONE"], I["CHANNEL"])][0][0],
-                      float(var.UZOutflow[0] * var.MMtoM3[0]))
+    np.testing.assert_allclose(
+        bysd[(I["UPPER_ZONE"], I["CHANNEL"])][0], var.UZOutflow * var.MMtoM3)
     # baseflow LZ -> channel
-    assert np.isclose(bysd[(I["LOWER_ZONE"], I["CHANNEL"])][0][0],
-                      float(var.LZOutflowToChannel[0] * var.MMtoM3[0]))
+    np.testing.assert_allclose(
+        bysd[(I["LOWER_ZONE"], I["CHANNEL"])][0], var.LZOutflowToChannel * var.MMtoM3)
     # surface runoff already m3 -> passed through unchanged
-    assert any(np.isclose(wf, float(var.ToChanM3Runoff[0]))
-               for _, _, _, wf, _ in c._host.moves)
+    assert any(np.allclose(wf, var.ToChanM3Runoff) for _, _, wf, _ in c._host.moves)
 
 
 def test_default_off_is_noop_import():

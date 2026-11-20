@@ -277,6 +277,31 @@ public:
             wflux_m3, wmass_src_m3);
     }
 
+    // Vectorised move for 1-D compartments (ny=nz=1): one transfer per cell,
+    // looped IN C++ so the host issues ONE call per (src,dst) transfer instead
+    // of nx -- essential at LISFLOOD scale (~6.2 M cells). wflux_m3 and
+    // wmass_src_m3 are length-nx arrays; cells with wflux<=0 are skipped.
+    void move_array(int src, int dst,
+                    py::array_t<double, py::array::c_style | py::array::forcecast> wflux,
+                    py::array_t<double, py::array::c_style | py::array::forcecast> wmass_src,
+                    int y, int m, int d, int h, int mi) {
+        require_init("move_array");
+        check_cmp(src);
+        if (dst != -1) check_cmp(dst);
+        const int nx = cmp_nx_[src];
+        const double* pf = checked_ptr(wflux, nx, 1, 1, "move_array(wflux_m3)");
+        const double* pm = checked_ptr(wmass_src, nx, 1, 1, "move_array(wmass_src_m3)");
+        const auto t = to_time(y, m, d, h, mi);
+        for (int ix = 0; ix < nx; ix++) {
+            if (pf[ix] <= 0.0) continue;
+            couplercalls_->RunSpaceStep(
+                *hostcfg_, *json_, *wqconfig_, *units_, *utils_, *readjson_,
+                *vars_, *initiate_, *TD_, *TS_, *LE_, *CH_, *SI_,
+                *extwatflux_ss_, *compute_, *output_, t,
+                src, ix, 0, 0, dst, ix, 0, 0, pf[ix], pm[ix]);
+        }
+    }
+
     // external water flux into the domain
     void inflow(const std::string& ewf_name, int dst, int ix_r, int iy_r, int iz_r,
                 double wflux_m3, int y, int m, int d, int h, int mi) {
