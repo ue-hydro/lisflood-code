@@ -177,6 +177,15 @@ class LisfloodModel_ini(DynamicModel):
         self.stateVar_module = stateVar(self)
 
 
+        # OpenWQ water-quality coupler (one-way, optional).
+        # Inert unless the 'OpenWQ' option is set in the settings file. Only the
+        # lightweight object is created here; compartments are declared lazily on
+        # the first dynamic() step, once soil/GW/channel arrays are allocated.
+        if option.get('OpenWQ', False):
+            from lisflood.openwq.coupler import LisfloodOpenWQCoupler
+            from lisflood.global_modules.settings import binding
+            self.openwq_module = LisfloodOpenWQCoupler(self, binding.get('OpenWQMasterJson', ''))
+
         # include output of tss and maps
         self.output_module = outputTssMap(self)
 

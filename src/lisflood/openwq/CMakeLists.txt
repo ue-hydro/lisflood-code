@@ -1,0 +1,1696 @@
+####################################
+# (Step A)
+# STEPS TO CREATE CONTAINER (contains all libraries to compile OpenWQ) ====> (ONLY NEED TO DO THIS ONCE!) <====
+####################################
+# (Step A.1) For DOCKER (for local machine use)
+####################################
+# 1) Start Docker
+# 2) In the terminal, go to the containers/ folder: cd containers/
+#    (optional) Clear all docker images and containers: docker system prune -a
+# 3) Create the "docker_openwq" container: docker compose up -d
+#    (optional, if needed) Stop the container: docker compose down
+#    (optional, if needed) See the containers running: docker ps
+# 4) Run a shell inside the container: docker exec -it docker_openwq /bin/bash
+
+####################################
+# (Step A.2) For Apptainer/Singularity (for HPC use)
+####################################
+# 1) May need to load apptainer/singularity module
+# 2) Go to the containers/ folder: cd containers/
+# 3) Create the singularity: apptainer build openwq.sif openwq_apptainer.def
+# (note: may need to add the --fakeroot flag if you don't have root permissions)
+####################################
+
+##############################
+# (Step B) 
+# STEPS TO COMPILE OPENWQ coupled to HOST MODEL (inside the container)
+##############################
+# 1) (as for Step A) Start Docker
+# 2) (as for Step A) In the terminal, go to the folder where this CMakeLists file is located 
+# 5) Open a shell inside that container: docker exec -it openwq_docker /bin/bash
+# 4) Inside the container, go to the folder where this CMakeLists file is located 
+# 5) Compile the model with cmake (create Makefile and compile). 
+# 5.1) Create Makefile (set DHOST_MODEL_TARGET and DCMAKE_BUILD_TYPE)
+#      Example: cmake -DHOST_MODEL_TARGET=summa_openwq -DCMAKE_BUILD_TYPE=Debug .; 
+# 5.2) Compile the model: make -j 2
+# Note: Compilation requires at least 16 GB RAM. Use -j 2 (not -j 4) to avoid OOM crashes.
+# Note: Example of Step 5 in one line: rm CMakeCache.txt; rm -r CMakeFiles; cmake -DHOST_MODEL_TARGET=mizuroute_lakes_cslm_openwq -DCMAKE_BUILD_TYPE=Debug .; make -j 2; rm *.mod
+# 5.3) The executable will be created in the "bin" folder
+
+##############################
+
+CMAKE_MINIMUM_REQUIRED(VERSION 3.10 FATAL_ERROR)
+
+Project(OpenWQ)
+
+#####
+# USER SECTION: Select the compilation options
+# That's all that needs to be changed
+#####
+
+# A) Set Compilation target:
+# optA1) crhm_openwq -> compile with crhm using hydrolink
+# optA2) summa_openwq -> compile with summa using hydrolink
+# optA3) mizuroute_openwq -> compile with mizuRoute using hydrolink
+# optA4) mizuroute_lakes_openwq -> compile with mizuroute-lakes using hydrolink
+# optA5) mizuroute_lakes_cslm_openwq -> compile with mizuroute-cslm using hydrolink
+# optA6) fluxos_openwq -> compile with fluxos using hydrolink
+# optA7) summa-mizuroute_openwq -> compile with summa and its internally coupled mizuroute using hydrolink
+# optA8) python_openwq -> compile the Python extension module (openwq_py) for Python host models (differentiable HBV) using hydrolink
+set(VALID_COMPILE_TARGETS "crhm_openwq" "summa_openwq"
+                          "mizuroute_openwq" "mizuroute_lakes_openwq" "mizuroute_lakes_cslm_openwq" "fluxos_openwq"
+                          "summa-mizuroute_openwq" "python_openwq")
+
+# Shared PhreeqcRM, built once into <deps_dir>/phreeqcrm-install: a host model built
+# as a shared library (SUMMA) cannot link the usual static, non-PIC PhreeqcRM of the
+# containers. Source: -DPHREEQCRM_SOURCE_DIR, else the containers' copy
+# (/opt/phreeqcrm/phreeqcrm-master in the Docker image, /opt/phreeqcrm in the
+# Apptainer image), else a git clone. Sets <out_cmake_dir> to the install's cmake folder.
+MACRO(OPENWQ_SHARED_PHREEQCRM deps_dir out_cmake_dir)
+    SET(_owq_prefix ${deps_dir}/phreeqcrm-install)
+    FILE(GLOB_RECURSE _owq_cfg ${_owq_prefix}/*/PhreeqcRMConfig.cmake)
+    if(NOT _owq_cfg)
+        if(DEFINED PHREEQCRM_SOURCE_DIR AND EXISTS ${PHREEQCRM_SOURCE_DIR}/CMakeLists.txt)
+            SET(_owq_src ${PHREEQCRM_SOURCE_DIR})
+        elseif(EXISTS /opt/phreeqcrm/phreeqcrm-master/CMakeLists.txt)
+            SET(_owq_src /opt/phreeqcrm/phreeqcrm-master)
+        elseif(EXISTS /opt/phreeqcrm/CMakeLists.txt)
+            SET(_owq_src /opt/phreeqcrm)
+        else()
+            SET(_owq_src ${deps_dir}/phreeqcrm-src)
+            if(NOT EXISTS ${_owq_src}/CMakeLists.txt)
+                MESSAGE(STATUS "** OpenWQ **: cloning usgs-coupled/phreeqcrm into ${_owq_src}")
+                execute_process(COMMAND git clone --depth 1 https://github.com/usgs-coupled/phreeqcrm.git ${_owq_src}
+                                RESULT_VARIABLE _owq_rc)
+                if(NOT _owq_rc EQUAL 0)
+                    MESSAGE(FATAL_ERROR "could not clone PhreeqcRM (no network?): pass -DPHREEQCRM_SOURCE_DIR=<source> "
+                                        "or point to an existing SHARED PhreeqcRM install")
+                endif()
+            endif()
+        endif()
+        SET(_owq_args -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
+                      -DPHREEQCRM_BUILD_TESTS=OFF -DPHREEQCRM_FORTRAN_TESTING=OFF
+                      -DPHREEQCRM_BUILD_MPI=OFF -DPHREEQCRM_BUILD_PYTHON=OFF
+                      -DCMAKE_INSTALL_PREFIX=${_owq_prefix})
+        if(CMAKE_CXX_COMPILER)
+            LIST(APPEND _owq_args -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
+        endif()
+        if(CMAKE_C_COMPILER)
+            LIST(APPEND _owq_args -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER})
+        endif()
+        MESSAGE(STATUS "** OpenWQ **: building a shared PhreeqcRM once from ${_owq_src} into ${_owq_prefix} (a few minutes)")
+        execute_process(COMMAND ${CMAKE_COMMAND} -S ${_owq_src} -B ${deps_dir}/phreeqcrm-build ${_owq_args}
+                        RESULT_VARIABLE _owq_rc OUTPUT_QUIET)
+        if(_owq_rc EQUAL 0)
+            execute_process(COMMAND ${CMAKE_COMMAND} --build ${deps_dir}/phreeqcrm-build -j 4
+                            RESULT_VARIABLE _owq_rc OUTPUT_QUIET)
+        endif()
+        if(_owq_rc EQUAL 0)
+            execute_process(COMMAND ${CMAKE_COMMAND} --install ${deps_dir}/phreeqcrm-build
+                            RESULT_VARIABLE _owq_rc OUTPUT_QUIET)
+        endif()
+        FILE(GLOB_RECURSE _owq_cfg ${_owq_prefix}/*/PhreeqcRMConfig.cmake)
+        if(NOT _owq_rc EQUAL 0 OR NOT _owq_cfg)
+            MESSAGE(FATAL_ERROR "the shared PhreeqcRM build in ${deps_dir} failed; see ${deps_dir}/phreeqcrm-build, "
+                                "or point to an existing SHARED PhreeqcRM install")
+        endif()
+    endif()
+    LIST(GET _owq_cfg 0 _owq_cfg)
+    get_filename_component(${out_cmake_dir} ${_owq_cfg} DIRECTORY)
+ENDMACRO()
+
+if(NOT HOST_MODEL_TARGET)
+   message(FATAL_ERROR "Need to set -DHOST_MODEL_TARGET. Options are ${VALID_COMPILE_TARGETS}")
+else()
+    SET(COMPILE_TARGET ${HOST_MODEL_TARGET})
+endif()
+
+list(FIND VALID_COMPILE_TARGETS ${COMPILE_TARGET} INDEX)
+list(INSERT CMAKE_MODULE_PATH 0 "${CMAKE_SOURCE_DIR}")
+if(${INDEX} EQUAL -1)
+    set(VALID_COMPILE_TARGETS_PRINT "")
+    foreach(target ${VALID_COMPILE_TARGETS})
+        set(VALID_COMPILE_TARGETS_PRINT "${VALID_COMPILE_TARGETS_PRINT}${target}\n")
+    endforeach()
+    message(FATAL_ERROR "Invalid HOST_MODEL_TARGET: ${COMPILE_TARGET} \n" 
+                        "Valid options are: \n${VALID_COMPILE_TARGETS_PRINT}"
+                        "Use cmake flag -DHOST_MODEL_TARGET=<option> to set the host model target")
+endif()
+
+## IF you selected SUMMA_OPENWQ, please select if the sundials solver is active
+## -- Options: Sundials, None
+SET(SOLVER_TYPE Sundials)
+
+# B) Set Compilation mode:
+# optB1) Debug -> set the necessary flags for debugging
+# optB2) Release -> set optimization flags
+if(NOT CMAKE_BUILD_TYPE)
+    message(FATAL_ERROR "Need to set -DCMAKE_BUILD_TYPE. Options are Release or Debug")
+else()
+    SET(COMPILE_MODE ${CMAKE_BUILD_TYPE})
+endif()
+
+# #####
+# # DON'T CHANGE BEYOND THIS POINT...............
+# #####
+
+if(UNIX AND NOT APPLE)
+    SET(CURRENT_PLATFORM "Linux")
+elseif(APPLE)
+    SET(CURRENT_PLATFORM "MacOS")
+else()
+    SET(CURRENT_PLATFORM "Windows")
+endif()
+
+MESSAGE(STATUS "##########################################")
+MESSAGE(STATUS "** OpenWQ **")
+MESSAGE(STATUS "OpenWQ Compilation Setup:")
+MESSAGE(STATUS "  => Compilation Target: ${COMPILE_TARGET}")
+MESSAGE(STATUS "  => Compilation Mode: ${COMPILE_MODE}")
+MESSAGE(STATUS "  => Current Platform: ${CURRENT_PLATFORM}")
+MESSAGE(STATUS "##########################################")
+# Check CPU architecture (arm or x86) for netcdf library
+execute_process(COMMAND uname -p
+                OUTPUT_VARIABLE SYSTEM_PROCESSOR
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+IF(SYSTEM_PROCESSOR MATCHES "aarch64") # ARM or X86 CPU Architecture
+    SET(NETCDF_LIB_PATH "/usr/lib/aarch64-linux-gnu/libnetcdff.a")
+ELSE()
+    SET(NETCDF_LIB_PATH "/usr/lib/x86_64-linux-gnu/libnetcdff.a")
+ENDIF()
+
+
+
+# Common to all targets
+PROJECT("${COMPILE_TARGET}")
+SET(CMAKE_CXX_STANDARD 17)
+SET(exec_name "${COMPILE_TARGET}_${COMPILE_MODE}")
+# Default executable directory (Change with -DEXEC_DIR=...)
+SET(EXEC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/bin CACHE STRING "Set the executable directory")
+SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${EXEC_DIR})
+# OpenWQ Files
+SET(OPENWQ_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+FILE(GLOB OPENWQ_SOURCES 
+    ${OPENWQ_DIR}/src/*.cpp 
+    ${OPENWQ_DIR}/src/global/*.cpp
+    ${OPENWQ_DIR}/src/extwatflux_ss/*.cpp
+    ${OPENWQ_DIR}/src/extwatflux_ss/json_SetConfigInfo/*.cpp
+    ${OPENWQ_DIR}/src/initiate/*.cpp
+    ${OPENWQ_DIR}/src/readjson/*.cpp
+    ${OPENWQ_DIR}/src/readjson/json_utils/*.cpp
+    ${OPENWQ_DIR}/src/couplercalls/*.cpp
+    ${OPENWQ_DIR}/src/output/*.cpp
+    ${OPENWQ_DIR}/src/output/json_SetConfigInfo/*.cpp
+    ${OPENWQ_DIR}/src/compute/*.cpp
+    ${OPENWQ_DIR}/src/compute/json_SetConfigInfo/*.cpp
+    ${OPENWQ_DIR}/src/compute/solver_backeuler/*.cpp
+    ${OPENWQ_DIR}/src/compute/solver_sundials/*.cpp
+    ${OPENWQ_DIR}/src/units/*.cpp
+    ${OPENWQ_DIR}/src/utils/*.cpp
+    ${OPENWQ_DIR}/src/utils/models_toolbox/*.cpp
+    ${OPENWQ_DIR}/src/models_CH/*.cpp
+    ${OPENWQ_DIR}/src/models_CH/bgc_flex/*.cpp
+    ${OPENWQ_DIR}/src/models_CH/PHREEQC/*.cpp
+    ${OPENWQ_DIR}/src/models_TD/*.cpp
+    ${OPENWQ_DIR}/src/models_TD/native_adv/*.cpp
+    ${OPENWQ_DIR}/src/models_TD/native_advdisp/*.cpp
+    ${OPENWQ_DIR}/src/models_LE/*.cpp
+    ${OPENWQ_DIR}/src/models_LE/native_boundmix/*.cpp
+    ${OPENWQ_DIR}/src/models_SI/*.cpp
+    ${OPENWQ_DIR}/src/models_SI/langmuir/*.cpp
+    ${OPENWQ_DIR}/src/models_SI/freundlich/*.cpp
+    ${OPENWQ_DIR}/src/models_TS/*.cpp
+    ${OPENWQ_DIR}/src/models_TS/hype_hvb/*.cpp
+    ${OPENWQ_DIR}/src/models_TS/hype_mmf/*.cpp
+    ${OPENWQ_INTERFACE_DIR}/OpenWQ_hydrolink.cpp
+    ${OPENWQ_INTERFACE_DIR}/OpenWQ_interface.cpp)
+
+SET(OPENWQ_INCLUDES ${OPENWQ_DIR}/src/)
+MESSAGE(STATUS "OpenWQ source files: ${OPENWQ_DIR}")
+
+# python_openwq (Python host models, e.g. the differentiable HBV of hydroDL2): the
+# Python interpreter, its pybind11 and a SHARED PhreeqcRM are resolved here, before
+# the common FIND_PACKAGE calls below, so that plain
+#     cmake -DHOST_MODEL_TARGET=python_openwq -DCMAKE_BUILD_TYPE=Release . && make
+# works with the Python environment active (nothing else to pass).
+# Layout, as for the other hosts: this folder is <host>/openwq and the hydrolink
+# files (OpenWQ_hydrolink.h/.cpp) are in its parent folder, where the module is written.
+IF("${COMPILE_TARGET}" STREQUAL "python_openwq")
+    get_filename_component(OPENWQ_INTERFACE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/.. ABSOLUTE)
+    if(NOT EXISTS ${OPENWQ_INTERFACE_DIR}/OpenWQ_hydrolink.cpp)
+        MESSAGE(FATAL_ERROR "python_openwq: ${OPENWQ_INTERFACE_DIR}/OpenWQ_hydrolink.cpp not found. "
+                            "This folder must be the OpenWQ clone inside the host's openwq folder "
+                            "that holds the hydrolink files.")
+    endif()
+    # Python of the active environment (a virtualenv is preferred) and its pybind11
+    if(DEFINED PYTHON_EXECUTABLE AND NOT DEFINED Python_EXECUTABLE)
+        SET(Python_EXECUTABLE ${PYTHON_EXECUTABLE})
+    endif()
+    FIND_PACKAGE(Python COMPONENTS Interpreter Development.Module REQUIRED)
+    if(NOT DEFINED pybind11_DIR OR NOT EXISTS "${pybind11_DIR}")
+        execute_process(COMMAND ${Python_EXECUTABLE} -m pybind11 --cmakedir
+                        OUTPUT_VARIABLE PY_PYBIND11_DIR OUTPUT_STRIP_TRAILING_WHITESPACE
+                        RESULT_VARIABLE PY_PYBIND11_RC ERROR_QUIET)
+        if(NOT PY_PYBIND11_RC EQUAL 0)
+            MESSAGE(FATAL_ERROR "python_openwq: pybind11 is not installed for ${Python_EXECUTABLE} "
+                                "(pip install pybind11), or pass -Dpybind11_DIR=<its cmake dir>.")
+        endif()
+        SET(pybind11_DIR ${PY_PYBIND11_DIR} CACHE PATH "pybind11 cmake directory" FORCE)
+    endif()
+    FIND_PACKAGE(pybind11 CONFIG REQUIRED)
+    MESSAGE(STATUS "** OpenWQ **: Python ${Python_VERSION} (${Python_EXECUTABLE})")
+    MESSAGE(STATUS "** OpenWQ **: pybind11 ${pybind11_VERSION} (${pybind11_DIR})")
+    # Shared PhreeqcRM: a Python module is a shared object and cannot link the
+    # usual static (non-PIC) PhreeqcRM. Unless -DPhreeqcRM_DIR is given, use
+    # <host>/openwq/_deps/phreeqcrm-install, built once from PHREEQCRM_SOURCE_DIR,
+    # else /opt/phreeqcrm/phreeqcrm-master (OpenWQ container), else a git clone.
+    if(NOT DEFINED PhreeqcRM_DIR OR "${PhreeqcRM_DIR}" STREQUAL "" OR "${PhreeqcRM_DIR}" MATCHES "NOTFOUND")
+        SET(PY_DEPS_DIR ${OPENWQ_INTERFACE_DIR}/_deps)
+        SET(PY_PHREEQCRM_PREFIX ${PY_DEPS_DIR}/phreeqcrm-install)
+        FILE(GLOB_RECURSE PY_PHREEQCRM_CONFIG ${PY_PHREEQCRM_PREFIX}/*/PhreeqcRMConfig.cmake)
+        if(NOT PY_PHREEQCRM_CONFIG)
+            if(DEFINED PHREEQCRM_SOURCE_DIR AND EXISTS ${PHREEQCRM_SOURCE_DIR}/CMakeLists.txt)
+                SET(PY_PHREEQCRM_SRC ${PHREEQCRM_SOURCE_DIR})
+            elseif(EXISTS /opt/phreeqcrm/phreeqcrm-master/CMakeLists.txt)
+                SET(PY_PHREEQCRM_SRC /opt/phreeqcrm/phreeqcrm-master)
+            else()
+                SET(PY_PHREEQCRM_SRC ${PY_DEPS_DIR}/phreeqcrm-src)
+                if(NOT EXISTS ${PY_PHREEQCRM_SRC}/CMakeLists.txt)
+                    MESSAGE(STATUS "** OpenWQ **: cloning usgs-coupled/phreeqcrm into ${PY_PHREEQCRM_SRC}")
+                    execute_process(COMMAND git clone --depth 1 https://github.com/usgs-coupled/phreeqcrm.git ${PY_PHREEQCRM_SRC}
+                                    RESULT_VARIABLE PY_RC)
+                    if(NOT PY_RC EQUAL 0)
+                        MESSAGE(FATAL_ERROR "python_openwq: could not clone PhreeqcRM; pass -DPHREEQCRM_SOURCE_DIR=<source> or -DPhreeqcRM_DIR=<shared install cmake dir>")
+                    endif()
+                endif()
+            endif()
+            MESSAGE(STATUS "** OpenWQ **: building a shared PhreeqcRM once from ${PY_PHREEQCRM_SRC} into ${PY_PHREEQCRM_PREFIX} (a few minutes)")
+            execute_process(COMMAND ${CMAKE_COMMAND} -S ${PY_PHREEQCRM_SRC} -B ${PY_DEPS_DIR}/phreeqcrm-build
+                                    -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
+                                    -DPHREEQCRM_BUILD_TESTS=OFF -DPHREEQCRM_FORTRAN_TESTING=OFF
+                                    -DPHREEQCRM_BUILD_MPI=OFF -DPHREEQCRM_BUILD_PYTHON=OFF
+                                    -DCMAKE_INSTALL_PREFIX=${PY_PHREEQCRM_PREFIX}
+                                    -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER} -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+                            RESULT_VARIABLE PY_RC OUTPUT_QUIET)
+            if(PY_RC EQUAL 0)
+                execute_process(COMMAND ${CMAKE_COMMAND} --build ${PY_DEPS_DIR}/phreeqcrm-build -j 4
+                                RESULT_VARIABLE PY_RC OUTPUT_QUIET)
+            endif()
+            if(PY_RC EQUAL 0)
+                execute_process(COMMAND ${CMAKE_COMMAND} --install ${PY_DEPS_DIR}/phreeqcrm-build
+                                RESULT_VARIABLE PY_RC OUTPUT_QUIET)
+            endif()
+            FILE(GLOB_RECURSE PY_PHREEQCRM_CONFIG ${PY_PHREEQCRM_PREFIX}/*/PhreeqcRMConfig.cmake)
+            if(NOT PY_RC EQUAL 0 OR NOT PY_PHREEQCRM_CONFIG)
+                MESSAGE(FATAL_ERROR "python_openwq: the shared PhreeqcRM build in ${PY_DEPS_DIR} failed; "
+                                    "see ${PY_DEPS_DIR}/phreeqcrm-build, or pass -DPhreeqcRM_DIR=<shared install cmake dir>")
+            endif()
+        endif()
+        LIST(GET PY_PHREEQCRM_CONFIG 0 PY_PHREEQCRM_CONFIG)
+        get_filename_component(PY_PHREEQCRM_CMAKE_DIR ${PY_PHREEQCRM_CONFIG} DIRECTORY)
+        SET(PhreeqcRM_DIR ${PY_PHREEQCRM_CMAKE_DIR} CACHE PATH "shared PhreeqcRM for python_openwq" FORCE)
+        SET(ENV{PhreeqcRM_DIR} ${PY_PHREEQCRM_CMAKE_DIR})
+    endif()
+    MESSAGE(STATUS "** OpenWQ **: PhreeqcRM (shared) ${PhreeqcRM_DIR}")
+ENDIF()
+
+FIND_PACKAGE(Armadillo REQUIRED) 
+FIND_PACKAGE(HDF5 REQUIRED)
+FIND_PACKAGE(PhreeqcRM REQUIRED)
+FIND_PACKAGE(SUNDIALS REQUIRED)
+
+# Set up the C++ flags
+IF("${COMPILE_MODE}" STREQUAL "Debug")
+    SET(CMAKE_CXX_FLAGS "-g -Wall -pedantic")
+ELSEIF("${COMPILE_MODE}" STREQUAL "Release")
+    FIND_PACKAGE(OpenMP)
+    # Architecture flag.  DEFAULT = -march=native, which is best (and safe) when
+    # the build machine and the run machine are the SAME CPU — e.g. local Docker.
+    # On clusters, if the BUILD node's CPU is newer than the COMPUTE nodes,
+    # -march=native bakes in instructions the compute node lacks and every run
+    # crashes (SIGILL/SIGSEGV).  For those HPC builds, configure with
+    #     -DOWQ_PORTABLE_ARCH=ON
+    # to emit a portable x86-64-v2 baseline that runs on any modern x86 node.
+    # Left OFF (the default) this is byte-identical to the previous
+    # -march=native behaviour, so LOCAL/Docker builds are UNAFFECTED.
+    OPTION(OWQ_PORTABLE_ARCH "Portable x86-64 baseline instead of -march=native (for HPC where build CPU != run CPU)" OFF)
+    IF(OWQ_PORTABLE_ARCH)
+        SET(OWQ_ARCH_FLAG "-march=x86-64-v2")
+    ELSE()
+        SET(OWQ_ARCH_FLAG "-march=native")
+    ENDIF()
+    # OPTIMIZED #15: native SIMD (AVX2/AVX-512) via the arch flag above,
+    # -DARMA_NO_DEBUG (disable Armadillo bounds checking),
+    # -DNDEBUG (disable asserts), -funroll-loops
+    SET(CMAKE_CXX_FLAGS "-O3 ${OWQ_ARCH_FLAG} -DARMA_NO_DEBUG -DNDEBUG -funroll-loops -Wall -pedantic ${OpenMP_CXX_FLAGS}")
+ENDIF()
+
+# ..................
+# IF TARGET = crhm_openwq
+# Only supports compilation in linux
+# ..................
+IF("${COMPILE_TARGET}" STREQUAL "crhm_openwq")
+
+    IF(UNIX AND NOT APPLE)
+        MESSAGE(STATUS "** OpenWQ **: current platform is Linux")
+        # Choose where to create the executable
+        SET(PARENT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+        SET(CRHM_DIR ${PARENT_DIR}/crhm)
+        SET(OPENWQ_DIR ${PARENT_DIR}/openwq/openwq)
+        SET(HYDROLINK_DIR ${PARENT_DIR}/openwq)
+
+        SET(EXEC_DIR ${OPENWQ_DIR}/bin)
+
+        FILE(GLOB SOURCES
+            ${CRHM_DIR}/vcl.cpp
+            ${CRHM_DIR}/GlobalDll.cpp
+            ${CRHM_DIR}/Common.cpp
+            ${CRHM_DIR}/ClassCRHM.cpp
+            ${CRHM_DIR}/ClassModule.cpp
+            ${CRHM_DIR}/NewModules.cpp
+            ${CRHM_DIR}/CRHM_parse.cpp
+            ${CRHM_DIR}/MacroUnit.cpp
+            ${CRHM_DIR}/WQ_Soil_NPCcycling.cpp
+            ${CRHM_DIR}/WQ_CRHM.cpp
+            ${CRHM_DIR}/About.cpp
+            ${CRHM_DIR}/Bld.cpp
+            ${CRHM_DIR}/Log.cpp
+            ${CRHM_DIR}/UpdateForm.cpp
+            ${CRHM_DIR}/CRHMmain.cpp
+            ${OPENWQ_DIR}/src/*.cpp
+            ${HYDROLINK_DIR}/OpenWQ_hydrolink.cpp)
+
+        IF(UNIX AND NOT APPLE)
+            MESSAGE(STATUS "current platform : Linux")
+        ENDIF()
+                        
+        IF("${COMPILE_MODE}" STREQUAL "Debug")
+            set(CMAKE_CXX_FLAGS "-g3 -Wall -pedantic")
+        ELSEIF("${COMPILE_MODE}" STREQUAL "Release")
+            set(CMAKE_CXX_FLAGS "-O3 -Wall -pedantic ${OpenMP_CXX_FLAGS}")
+            FIND_PACKAGE(OpenMP)
+        ENDIF()
+
+        IF("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+            set(CXX_fileSYSTEM_LIBRARIES "stdc++fs")
+        ENDIF()
+
+        FIND_PACKAGE(Armadillo REQUIRED) # don't forget to activate HDF5 support when installing Armadillo
+        FIND_PACKAGE(HDF5 REQUIRED)
+        FIND_PACKAGE(Boost)
+
+        SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${EXEC_DIR})
+
+        # Create the executable with openWQ coupled to CRHM   
+        ADD_EXECUTABLE(${exec_name} ${SOURCES})
+
+        TARGET_INCLUDE_DIRECTORIES(
+            ${exec_name} PUBLIC 
+            ${Boost_INCLUDE_DIRS}
+            ${ARMADILLO_INCLUDE_DIR}
+            ${HDF5_INCLUDE_DIRS}
+            "/usr/include/"
+            "/code/")
+
+        TARGET_LINK_LIBRARIES(
+            ${exec_name} PUBLIC
+            ${NETCDF_LIB_PATH}
+            ${Boost_LIBRARIES}
+            ${ARMADILLO_LIBRARIES}
+            ${HDF5_C_LIBRARY_hdf5})
+                
+        IF(OpenMP_CXX_FOUND)
+            MESSAGE("** OpenWQ **: OpenMP enabled!")
+            TARGET_LINK_LIBRARIES(
+                    ${exec_name} PUBLIC 
+                    OpenMP::OpenMP_CXX)
+        ENDIF()
+
+    ELSE()
+        # Apple and Windows not supported
+        IF(UNIX AND APPLE)
+                MESSAGE(STATUS "** OpenWQ **: current platform is MacOS")
+        ELSE()
+                MESSAGE(STATUS "** OpenWQ **: current platform is Windows")
+        ENDIF()
+        MESSAGE(STATUS "Not supported yet!")
+        MESSAGE(STATUS "Please compile the code inside the Docker container!")
+        MESSAGE(STATUS "See intructions in the CMakeLists.txt.")
+
+    ENDIF()
+
+# ..................
+# IF TARGET = summa_openwq
+# Only supports compilation in linux
+# ..................
+ELSEIF("${COMPILE_TARGET}" STREQUAL "summa_openwq")
+
+    if(NOT UNIX)
+        MESSAGE(STATUS "Current Operating System is not supported yet!")
+    endif()
+    
+
+    PROJECT(openwq_summa LANGUAGES CXX Fortran)
+    # Declare use of multiple Languages
+    ENABLE_LANGUAGE(C)
+    INCLUDE(FortranCInterface)
+    FortranCInterface_VERIFY(CXX)
+    
+    # Find required Module
+    FIND_PACKAGE(netCDF REQUIRED)
+    FIND_PACKAGE(LAPACK REQUIRED)
+    
+    # TURN ON OpenWQ in SUMMA source code
+    add_compile_definitions(OPENWQ_ACTIVE)
+
+    SET(PARENT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+    SET(SUMMA_DIR ${PARENT_DIR}../../../../../)
+    
+    SET(OPENWQ_INTERFACE_DIR ${PARENT_DIR}/openwq)
+    SET(OPENWQ_DIR ${PARENT_DIR}/openwq/openwq) 
+    SET(EXEC_DIR ${OPENWQ_DIR}/bin)
+
+    FILE(GLOB HYDROLINK_SOURCES 
+        ${OPENWQ_INTERFACE_DIR}/OpenWQ_hydrolink.cpp
+        ${OPENWQ_INTERFACE_DIR}/OpenWQ_interface.cpp)
+
+    # File definitions for subcomponents - For Summa
+    SET(DRIVER_DIR ${SUMMA_DIR}/build/source/driver)
+    SET(HOOKUP_DIR ${SUMMA_DIR}/build/source/hookup)
+    SET(NETCDF_DIR ${SUMMA_DIR}/build/source/netcdf)
+    SET(DSHARE_DIR ${SUMMA_DIR}/build/source/dshare)
+    SET(NOAHMP_DIR ${SUMMA_DIR}/build/source/noah-mp)
+    SET(ENGINE_DIR ${SUMMA_DIR}/build/source/engine)
+    
+    #  utilities
+    SET(NRUTIL
+        ${ENGINE_DIR}/nrtype.f90
+        ${ENGINE_DIR}/f2008funcs.f90
+        ${ENGINE_DIR}/nr_utility.f90)
+    # Numerical recipes procedures
+    SET(NRPROC
+        ${ENGINE_DIR}/expIntegral.f90
+        ${ENGINE_DIR}/spline_int.f90
+        ${ENGINE_DIR}/hyp_2F1.f90)
+    # Hook-up modules (set files and directory paths)
+    SET(HOOKUP
+        ${HOOKUP_DIR}/ascii_util.f90
+        ${HOOKUP_DIR}/summaFileManager.f90)
+    
+    # Data modules
+    SET(DATAMS
+        ${OPENWQ_INTERFACE_DIR}/openWQ.f90 # needs to be compiled before globalData
+        ${DSHARE_DIR}/data_types.f90
+        ${DSHARE_DIR}/flxMapping.f90
+        ${DSHARE_DIR}/get_ixname.f90
+        ${DSHARE_DIR}/globalData.f90
+        ${DSHARE_DIR}/multiconst.f90
+        ${DSHARE_DIR}/outpt_stat.f90
+        ${DSHARE_DIR}/popMetadat.f90
+        ${DSHARE_DIR}/var_lookup.f90)
+    SET(DATAMS_SUNDIALS
+        ${DSHARE_DIR}/type4ida.f90
+        ${DSHARE_DIR}/type4kinsol.f90)
+    # utility modules
+    SET(UTILMS
+        ${ENGINE_DIR}/matrixOper.f90
+        ${ENGINE_DIR}/mDecisions.f90
+        ${ENGINE_DIR}/snow_utils.f90
+        ${ENGINE_DIR}/soil_utils.f90
+        ${ENGINE_DIR}/time_utils.f90
+        ${ENGINE_DIR}/updatState.f90)
+    SET(UTILMS_SUNDIALS
+        ${ENGINE_DIR}/soil_utilsAddPrime.f90
+        ${ENGINE_DIR}/updatStateWithPrime.f90)
+
+    # Solver
+    SET(SOLVER
+        ${ENGINE_DIR}/bigAquifer.f90
+        ${ENGINE_DIR}/computFlux.f90
+        ${ENGINE_DIR}/computHeatCap.f90
+        ${ENGINE_DIR}/computJacob.f90
+        ${ENGINE_DIR}/computResid.f90
+        ${ENGINE_DIR}/computSnowDepth.f90
+        ${ENGINE_DIR}/computThermConduct.f90
+        ${ENGINE_DIR}/coupled_em.f90
+        ${ENGINE_DIR}/diagn_evar.f90
+        ${ENGINE_DIR}/eval8summa.f90
+        ${ENGINE_DIR}/groundwatr.f90
+        ${ENGINE_DIR}/opSplittin.f90
+        ${ENGINE_DIR}/run_oneGRU.f90
+        ${ENGINE_DIR}/run_oneHRU.f90
+        ${ENGINE_DIR}/snowLiqFlx.f90
+        ${ENGINE_DIR}/soilLiqFlx.f90
+        ${ENGINE_DIR}/ssdNrgFlux.f90
+        ${ENGINE_DIR}/stomResist.f90
+        ${ENGINE_DIR}/summaSolve4homegrown.f90
+        ${ENGINE_DIR}/systemSolv.f90
+        ${ENGINE_DIR}/varSubstep.f90
+        ${ENGINE_DIR}/vegLiqFlux.f90
+        ${ENGINE_DIR}/vegNrgFlux.f90
+        ${ENGINE_DIR}/vegPhenlgy.f90
+        ${ENGINE_DIR}/vegSWavRad.f90)
+    set(SOLVER_SUNDIALS
+        ${ENGINE_DIR}/computJacobWithPrime.f90
+        ${ENGINE_DIR}/computResidWithPrime.f90
+        ${ENGINE_DIR}/eval8summaWithPrime.f90
+        ${ENGINE_DIR}/summaSolve4ida.f90
+        ${ENGINE_DIR}/summaSolve4kinsol.f90)
+
+    # Define routines for SUMMA preliminaries
+    SET(PRELIM
+        ${ENGINE_DIR}/allocspace.f90
+        ${ENGINE_DIR}/check_icond.f90
+        ${ENGINE_DIR}/checkStruc.f90
+        ${ENGINE_DIR}/childStruc.f90
+        ${ENGINE_DIR}/conv_funcs.f90
+        ${ENGINE_DIR}/ffile_info.f90
+        ${ENGINE_DIR}/read_pinit.f90
+        ${ENGINE_DIR}/read_attrb.f90
+        ${ENGINE_DIR}/paramCheck.f90
+        ${ENGINE_DIR}/pOverwrite.f90
+        ${ENGINE_DIR}/sunGeomtry.f90
+        ${ENGINE_DIR}/read_param.f90
+        ${OPENWQ_INTERFACE_DIR}/summa_openWQ_allocspace.f90)
+    # Define routines for the SUMMA model runs
+    SET(MODRUN
+        ${ENGINE_DIR}/canopySnow.f90
+        ${ENGINE_DIR}/derivforce.f90
+        ${ENGINE_DIR}/enthalpyTemp.f90
+        ${ENGINE_DIR}/getVectorz.f90
+        ${ENGINE_DIR}/indexState.f90
+        ${ENGINE_DIR}/layerMerge.f90
+        ${ENGINE_DIR}/layerDivide.f90
+        ${ENGINE_DIR}/qTimeDelay.f90
+        ${ENGINE_DIR}/read_force.f90
+        ${ENGINE_DIR}/snowAlbedo.f90
+        ${ENGINE_DIR}/snwCompact.f90
+        ${ENGINE_DIR}/tempAdjust.f90
+        ${ENGINE_DIR}/updateVars.f90
+        ${ENGINE_DIR}/var_derive.f90
+        ${ENGINE_DIR}/volicePack.f90)
+    set(MODRUN_SUNDIALS
+        ${ENGINE_DIR}/tol4ida.f90
+        ${ENGINE_DIR}/updateVarsWithPrime.f90)
+
+    SET(NETCDF
+        ${NETCDF_DIR}/netcdf_util.f90
+        ${NETCDF_DIR}/def_output.f90
+        ${NETCDF_DIR}/modelwrite.f90
+        ${NETCDF_DIR}/read_icond.f90)
+    # Stitch together common programs
+    SET(COMM_ALL
+        ${NRPROC}
+        ${HOOKUP}
+        ${DATAMS}
+        ${UTILMS})
+
+    if (SOLVER_TYPE MATCHES Sundials)
+	    set(COMM_ALL ${COMM_ALL} ${DATAMS_SUNDIALS} ${UTILMS_SUNDIALS})
+        add_compile_definitions(SUNDIALS_ACTIVE)
+        SET(SUNDIALS_TARGETS 
+            SUNDIALS::fida_mod_shared
+            SUNDIALS::fkinsol_mod_shared)
+    endif()
+    # Stitch together SUMMA programs
+    SET(SUMMA_ALL
+        ${NETCDF}
+        ${PRELIM}
+        ${MODRUN}
+        ${SOLVER})
+    if(SOLVER_TYPE MATCHES Sundials)
+        set(SUMMA_ALL ${SUMMA_ALL}
+		    ${MODRUN_SUNDIALS}
+            ${SOLVER_SUNDIALS})
+    endif()
+    # Define the driver routine
+    SET(DRIVER
+        ${DRIVER_DIR}/summa_type.f90
+        ${DRIVER_DIR}/summa_util.f90
+        ${DRIVER_DIR}/summa_alarms.f90
+        ${DRIVER_DIR}/summa_globalData.f90
+        ${DRIVER_DIR}/summa_defineOutput.f90
+        ${DRIVER_DIR}/summa_init.f90
+        ${DRIVER_DIR}/summa_setup.f90
+        ${DRIVER_DIR}/summa_restart.f90
+        ${DRIVER_DIR}/summa_forcing.f90
+        ${DRIVER_DIR}/summa_modelRun.f90
+        ${DRIVER_DIR}/summa_writeOutput.f90
+        ${OPENWQ_INTERFACE_DIR}/summa_openWQ.f90
+        ${DRIVER_DIR}/summa_driver.f90)
+
+            
+    IF("${COMPILE_MODE}" STREQUAL "Debug")
+        SET(CMAKE_Fortran_FLAGS "-p -g -Wall -ffree-line-length-none \
+            -fmax-errors=0 -fbacktrace -fcheck=bounds -cpp")
+    ELSEIF("${COMPILE_MODE}" STREQUAL "Release")
+        SET(CMAKE_Fortran_FLAGS "-O3 -ffree-line-length-none -fmax-errors=0 \
+            -lstdc++ -cpp")
+    ENDIF()
+
+    MESSAGE(STATUS "SUNDIALS include dirs: ${INC_SUNDIALS}")
+
+    # compile openWQ into an object file
+    ADD_LIBRARY(openWQ OBJECT ${OPENWQ_SOURCES} ${HYDROLINK_SOURCES})
+    FIND_PACKAGE(SUNDIALS REQUIRED)
+    FIND_PACKAGE(PhreeqcRM REQUIRED)
+    MESSAGE(STATUS "ARMADILLO: ${ARMADILLO_INCLUDE_DIR}")
+    MESSAGE(STATUS "PHREEQC: ${PhreeqcRM_INCLUDE_DIR}")
+    
+    TARGET_INCLUDE_DIRECTORIES(openWQ PRIVATE
+        ${ARMADILLO_INCLUDE_DIR}
+        ${HDF5_INCLUDE_DIRS}
+        ${PHREEQCRM_INCLUDE_DIR}
+        ${OPENWQ_INCLUDES})
+    TARGET_LINK_LIBRARIES(openWQ PUBLIC
+        ${ARMADILLO_LIBRARIES}
+        SUNDIALS::cvode
+        PhreeqcRM::PhreeqcRM
+        ${HDF5_C_LIBRARY_hdf5})
+    IF(OpenMP_CXX_FOUND)
+        MESSAGE("** OpenWQ **: OpenMP enabled!")
+        TARGET_LINK_LIBRARIES(openWQ PUBLIC OpenMP::OpenMP_CXX)
+    ENDIF()
+
+    # Compile the NOAHMP into object/.mod files
+    ADD_LIBRARY(SUMMA_NOAHMP OBJECT
+            ${NOAHMP_DIR}/module_model_constants.F
+            ${NOAHMP_DIR}/module_sf_noahutl.F
+            ${NOAHMP_DIR}/module_sf_noahlsm.F
+            ${NOAHMP_DIR}/module_sf_noahmplsm.F
+            ${NRUTIL})
+    IF("${COMPILE_MODE}" STREQUAL "Debug")
+        target_compile_options(SUMMA_NOAHMP PRIVATE -cpp -p -g -ffree-form 
+            -ffree-line-length-none -fmax-errors=0 -fbacktrace -Wno-unused 
+            -Wno-unused-dummy-argument)
+    ELSEIF("${COMPILE_MODE}" STREQUAL "Release")
+        target_compile_options(SUMMA_NOAHMP PRIVATE -cpp -O3 -ffree-form 
+            -ffree-line-length-none -fmax-errors=0 -lstdc++ -fopenmp)
+    ENDIF()
+
+
+    # Compile Summa_Comm into object/.mod files
+    ADD_LIBRARY(SUMMA_COMM OBJECT ${COMM_ALL})
+    IF("${COMPILE_MODE}" STREQUAL "Debug")
+        target_compile_options(SUMMA_COMM PRIVATE -p -cpp -g -Wall 
+            -ffree-line-length-none -fmax-errors=0 -fbacktrace -fcheck=bounds)
+    ELSEIF("${COMPILE_MODE}" STREQUAL "Release")
+        target_compile_options(SUMMA_COMM PRIVATE -O3 -cpp 
+            -ffree-line-length-none -fmax-errors=0 -lstdc++ -fopenmp)
+    ENDIF() 
+
+    TARGET_INCLUDE_DIRECTORIES(SUMMA_COMM PRIVATE
+            "/usr/include/"
+            "/code/")
+    TARGET_LINK_LIBRARIES(SUMMA_COMM PUBLIC
+            ${NETCDF_LIB_PATH}
+            SUMMA_NOAHMP)
+
+    SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${EXEC_DIR})
+
+    # Create the executable with openWQ coupled to Summa                 
+    ADD_EXECUTABLE(
+        ${exec_name}
+        ${SUMMA_ALL}
+        ${DRIVER})
+        SET_PROPERTY(TARGET ${exec_name} PROPERTY LINKER_LANGUAGE Fortran)
+        TARGET_INCLUDE_DIRECTORIES(
+            ${exec_name} PUBLIC
+            ${LAPACK_INCLUDES}
+            ${netCDF_INCLUDES})
+        TARGET_LINK_LIBRARIES(
+            ${exec_name} PUBLIC
+            ${NETCDF_LIB_PATH}
+            ${LAPACK_LIBRARIES}
+            ${netCDF_LIBRARIES}
+            SUMMA_COMM
+            SUMMA_NOAHMP
+            ${SUNDIALS_TARGETS}
+            openWQ)
+
+
+# ..................
+# IF TARGET = mizuroute_openwq
+# Only supports compilation in linux
+# ..................
+ELSEIF("${COMPILE_TARGET}" STREQUAL "mizuroute_openwq")
+
+        SET(exec_name "${COMPILE_TARGET}_${COMPILE_MODE}")
+
+        # Choose where to create the executable
+        SET(PARENT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+        IF(UNIX AND NOT APPLE)
+
+                MESSAGE(STATUS "** OpenWQ ** current platform is Linux")
+
+                # Declare use of multiple Languages
+                PROJECT("${COMPILE_TARGET}" LANGUAGES CXX Fortran)
+
+                # C needs to be enables
+                ENABLE_LANGUAGE(C)
+                
+                # Verify language compilers can talk to each other
+                INCLUDE(FortranCInterface)
+                FortranCInterface_VERIFY(CXX)
+
+                # Get paths to source code
+                SET(MIZUROUTE_DIR ${PARENT_DIR}/src)
+                SET(OPENWQ_DIR ${PARENT_DIR}/openwq/openwq)
+                SET(OPENWQ_INTERFACE_DIR ${OPENWQ_DIR}/..)
+                SET(EXEC_DIR ${OPENWQ_DIR}/bin)
+
+                # Setting OpenWQ sources
+                SET(MIZUROUTE_UTILS
+                        ${MIZUROUTE_DIR}/nrtype.f90
+                        ${MIZUROUTE_DIR}/nr_utility.f90
+                        ${MIZUROUTE_DIR}/ascii_util.f90
+                        ${MIZUROUTE_DIR}/ncio_utils.f90
+                        ${MIZUROUTE_DIR}/gamma_func.f90
+                )
+                SET(MIZUROUTE_DATATYPES
+                        ${OPENWQ_INTERFACE_DIR}/openWQ.f90 # needs to be compiled before globalData
+                        ${MIZUROUTE_DIR}/public_var.f90
+                        ${MIZUROUTE_DIR}/dataTypes.f90
+                        ${MIZUROUTE_DIR}/var_lookup.f90
+                        ${MIZUROUTE_DIR}/time_utils.f90
+                        ${MIZUROUTE_DIR}/datetime_data.f90
+                        ${MIZUROUTE_DIR}/globalData.f90
+                        ${MIZUROUTE_DIR}/popMetadat.f90
+                        ${MIZUROUTE_DIR}/allocation.f90
+                )
+                SET(MIZUROUTE_INIT
+                        ${MIZUROUTE_DIR}/network_topo.f90
+                        ${MIZUROUTE_DIR}/process_param.f90
+                        ${MIZUROUTE_DIR}/process_ntopo.f90
+                        ${MIZUROUTE_DIR}/pfafstetter.f90
+                        ${MIZUROUTE_DIR}/domain_decomposition.f90
+                )
+                SET(MIZUROUTE_IO
+                        ${MIZUROUTE_DIR}/remap.f90
+                        ${MIZUROUTE_DIR}/read_control.f90
+                        ${MIZUROUTE_DIR}/read_param.f90
+                        ${MIZUROUTE_DIR}/read_streamSeg.f90
+                        ${MIZUROUTE_DIR}/write_streamSeg.f90
+                        ${MIZUROUTE_DIR}/read_runoff.f90
+                        ${MIZUROUTE_DIR}/get_basin_runoff.f90
+                        ${MIZUROUTE_DIR}/read_remap.f90
+                        ${MIZUROUTE_DIR}/read_restart.f90
+                        ${MIZUROUTE_DIR}/write_restart.f90
+                        ${MIZUROUTE_DIR}/write_simoutput.f90
+                )
+                SET(MIZUROUTE_CORE
+                        ${MIZUROUTE_DIR}/model_finalize.f90
+                        ${MIZUROUTE_DIR}/accum_runoff.f90
+                        ${MIZUROUTE_DIR}/basinUH.f90
+                        ${MIZUROUTE_DIR}/irf_route.f90
+                        ${MIZUROUTE_DIR}/kwt_route.f90
+                        ${MIZUROUTE_DIR}/dfw_route.f90
+                        ${MIZUROUTE_DIR}/kw_route.f90
+                        ${MIZUROUTE_DIR}/mc_route.f90
+                        ${MIZUROUTE_DIR}/main_route.f90
+                        ${MIZUROUTE_DIR}/model_setup.f90
+                        ${OPENWQ_INTERFACE_DIR}/mizuroute_openwq.f90
+                )
+                SET(MIZUROUTE_DRIVER 
+                        ${MIZUROUTE_DIR}/route_runoff.f90
+                )
+                # Stitch together MIZUROUTE programs
+                SET(MIZUROUTE_MOD_ALL
+                        ${MIZUROUTE_UTILS}
+                        ${MIZUROUTE_DATATYPES}
+                        ${MIZUROUTE_INIT}
+                        ${MIZUROUTE_IO}
+                        ${MIZUROUTE_CORE})
+
+                # Setting MizuRoute sources
+                FILE(GLOB OPENWQ_SOURCES 
+                        ${OPENWQ_DIR}/src/*.cpp
+                        ${OPENWQ_INTERFACE_DIR}/OpenWQ_hydrolink.cpp
+                        ${OPENWQ_INTERFACE_DIR}/OpenWQ_interface.cpp)
+
+                SET(CMAKE_CXX_STANDARD 17)
+
+                IF("${COMPILE_MODE}" STREQUAL "Debug")
+                        # -cpp: run the C preprocessor on the Fortran sources so the
+                        # #if defined(VERSION)/#endif guards in mizuRoute (e.g.
+                        # src/standalone/model_setup.f90) are handled instead of
+                        # emitting "Illegal preprocessor directive" warnings.
+                        SET(CMAKE_Fortran_FLAGS "-g3 -Wall -fmax-errors=0 -fbacktrace -fcheck=all -ffpe-trap=zero -ffree-line-length-none -lstdc++ -cpp")
+                        SET(CMAKE_CXX_FLAGS "-g3 -O0 -Wall -pedantic")
+                ELSEIF("${COMPILE_MODE}" STREQUAL "Release")
+                        # -cpp: see note in the Debug branch above.
+                        SET(CMAKE_Fortran_FLAGS "-O3 -fmax-errors=0 -ffree-line-length-none -lstdc++ -fopenmp -cpp")
+                        # OPTIMIZED #15: Added -march=native, -DARMA_NO_DEBUG, -DNDEBUG, -funroll-loops
+                        SET(CMAKE_CXX_FLAGS "-O3 -march=native -DARMA_NO_DEBUG -DNDEBUG -funroll-loops ${OpenMP_CXX_FLAGS}")
+                        FIND_PACKAGE(OpenMP)
+                ENDIF()
+
+                FIND_PACKAGE(Armadillo REQUIRED) # don't forget to activate HDF5 support when installing Armadillo
+                FIND_PACKAGE(HDF5 REQUIRED)
+                FIND_PACKAGE(netCDF REQUIRED)
+                FIND_PACKAGE(LAPACK REQUIRED)
+
+                SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${EXEC_DIR})
+
+                # compile openWQ into an object file
+                ADD_LIBRARY(OPENWQ_OBJ OBJECT 
+                        ${OPENWQ_SOURCES})
+                TARGET_INCLUDE_DIRECTORIES(OPENWQ_OBJ PRIVATE
+                        ${ARMADILLO_INCLUDE_DIR}
+                        ${HDF5_INCLUDE_DIRS}
+                        ${OpenMP_INCLUDE_DIR}
+                        ${OPENWQ_DIR}/src/)
+                TARGET_LINK_LIBRARIES(OPENWQ_OBJ PUBLIC
+                        ${ARMADILLO_LIBRARIES}
+                        ${HDF5_C_LIBRARY_hdf5})
+
+                IF(OpenMP_CXX_FOUND)
+                        MESSAGE("** OpenWQ **: OpenMP enabled!")
+                        TARGET_LINK_LIBRARIES(
+                                OPENWQ_OBJ PUBLIC 
+                                OpenMP::OpenMP_CXX)
+                ENDIF()
+
+                # Create the executable with openWQ coupled to Mizuroute                 
+                ADD_EXECUTABLE(${exec_name}
+                        ${MIZUROUTE_MOD_ALL}
+                        ${MIZUROUTE_DRIVER})
+                SET_PROPERTY(TARGET ${exec_name} PROPERTY LINKER_LANGUAGE Fortran)
+                TARGET_INCLUDE_DIRECTORIES(
+                        ${exec_name} PUBLIC
+                        ${LAPACK_INCLUDES}
+                        ${netCDF_INCLUDES}
+                        "/usr/include/"
+                        "/code/")
+                TARGET_LINK_LIBRARIES(
+                        ${exec_name} PUBLIC
+                        ${NETCDF_LIB_PATH}
+                        ${LAPACK_LIBRARIES}
+                        ${netCDF_LIBRARIES}
+                        OPENWQ_OBJ)
+
+        ELSE()
+
+                # Apple and Windows not supported
+                IF(UNIX AND APPLE)
+                        MESSAGE(STATUS "** OpenWQ: current platform is MacOS")
+                ELSE()
+                        MESSAGE(STATUS "** OpenWQ: current platform is Windows")
+                ENDIF()
+                MESSAGE(STATUS "Not supported yet!")
+                MESSAGE(STATUS "Please compile the code inside the Docker container!")
+                MESSAGE(STATUS "See intructions in the CMakeLists.txt.")
+
+        ENDIF()
+
+
+# ..................
+# IF TARGET = mizuroute_lakes_openwq
+# Only supports compilation in linux
+# ..................
+ELSEIF("${COMPILE_TARGET}" STREQUAL "mizuroute_lakes_openwq")
+
+        SET(exec_name "${COMPILE_TARGET}_${COMPILE_MODE}")
+
+        # Choose where to create the executable
+        SET(PARENT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+        IF(UNIX AND NOT APPLE)
+
+                MESSAGE(STATUS "** OpenWQ ** current platform is Linux")
+
+                # Declare use of multiple Languages
+                PROJECT("${COMPILE_TARGET}" LANGUAGES CXX Fortran)
+
+                # C needs to be enables
+                ENABLE_LANGUAGE(C)
+                
+                # Verify language compilers can talk to each other
+                INCLUDE(FortranCInterface)
+                FortranCInterface_VERIFY(CXX)
+
+                # Get paths to source code
+                SET(OPENWQ_DIR ${PARENT_DIR}/openwq/openwq)
+                SET(OPENWQ_INTERFACE_DIR ${OPENWQ_DIR}/..)
+                SET(EXEC_DIR ${OPENWQ_DIR}/bin)
+
+                # File definitions for subcomponents - For OpenWQ
+                FILE(GLOB OPENWQ_SOURCES 
+                    ${OPENWQ_DIR}/src/*.cpp 
+                    ${OPENWQ_DIR}/src/global/*.cpp
+                    ${OPENWQ_DIR}/src/extwatflux_ss/*.cpp
+                    ${OPENWQ_DIR}/src/extwatflux_ss/json_SetConfigInfo/*.cpp
+                    ${OPENWQ_DIR}/src/initiate/*.cpp
+                    ${OPENWQ_DIR}/src/readjson/*.cpp
+                    ${OPENWQ_DIR}/src/readjson/json_utils/*.cpp
+                    ${OPENWQ_DIR}/src/couplercalls/*.cpp
+                    ${OPENWQ_DIR}/src/output/*.cpp
+                    ${OPENWQ_DIR}/src/output/json_SetConfigInfo/*.cpp
+                    ${OPENWQ_DIR}/src/compute/*.cpp
+                    ${OPENWQ_DIR}/src/compute/json_SetConfigInfo/*.cpp
+                    ${OPENWQ_DIR}/src/compute/solver_backeuler/*.cpp
+                    ${OPENWQ_DIR}/src/compute/solver_sundials/*.cpp
+                    ${OPENWQ_DIR}/src/units/*.cpp
+                    ${OPENWQ_DIR}/src/utils/*.cpp
+                    ${OPENWQ_DIR}/src/utils/models_toolbox/*.cpp
+                    ${OPENWQ_DIR}/src/models_CH/*.cpp
+                    ${OPENWQ_DIR}/src/models_CH/bgc_flex/*.cpp
+                    ${OPENWQ_DIR}/src/models_CH/PHREEQC/*.cpp
+                    ${OPENWQ_DIR}/src/models_TD/*.cpp
+                    ${OPENWQ_DIR}/src/models_TD/native_adv/*.cpp
+                    ${OPENWQ_DIR}/src/models_TD/native_advdisp/*.cpp
+                    ${OPENWQ_DIR}/src/models_LE/*.cpp
+                    ${OPENWQ_DIR}/src/models_LE/native_boundmix/*.cpp
+                    ${OPENWQ_DIR}/src/models_SI/*.cpp
+                    ${OPENWQ_DIR}/src/models_SI/langmuir/*.cpp
+                    ${OPENWQ_DIR}/src/models_SI/freundlich/*.cpp
+                    ${OPENWQ_DIR}/src/models_TS/*.cpp
+                    ${OPENWQ_DIR}/src/models_TS/hype_hvb/*.cpp
+                    ${OPENWQ_DIR}/src/models_TS/hype_mmf/*.cpp
+                    ${OPENWQ_INTERFACE_DIR}/OpenWQ_hydrolink.cpp
+                    ${OPENWQ_INTERFACE_DIR}/OpenWQ_interface.cpp)
+                
+                SET(OPENWQ_INCLUDES
+                    ${OPENWQ_DIR}/src/global/
+                    ${PARENT_DIR})
+
+                SET(MIZUROUTE_DIR ${PARENT_DIR}/src)
+                
+
+                # Setting mizuroute
+                SET(MIZUROUTE_UTILS
+                    ${MIZUROUTE_DIR}/hydraulic.f90
+                     ${MIZUROUTE_DIR}/mpi_utils.f90
+                     ${MIZUROUTE_DIR}/model_utils.f90
+                    ${MIZUROUTE_DIR}/gamma_func.f90
+                    ${MIZUROUTE_DIR}/nrtype.f90
+                )
+                SET(MIZUROUTE_DATATYPES
+                    ${OPENWQ_INTERFACE_DIR}/openWQ.f90 # needs to be compiled before globalData
+                    ${MIZUROUTE_DIR}/nrtype.f90
+                    ${MIZUROUTE_DIR}/public_var.f90
+                    ${MIZUROUTE_DIR}/nr_utils.f90
+                    ${MIZUROUTE_DIR}/ncio_utils.f90
+                    ${MIZUROUTE_DIR}/pio_utils.f90
+                    ${MIZUROUTE_DIR}/ascii_utils.f90
+                    ${MIZUROUTE_DIR}/datetime_data.f90
+                    ${MIZUROUTE_DIR}/dataTypes.f90
+                    ${MIZUROUTE_DIR}/var_lookup.f90
+                    ${MIZUROUTE_DIR}/base_route.f90
+                    ${MIZUROUTE_DIR}/csv_data.f90
+                    ${MIZUROUTE_DIR}/gageMeta_data.f90
+                    ${MIZUROUTE_DIR}/obs_data.f90
+                    ${MIZUROUTE_DIR}/globalData.f90
+                    ${MIZUROUTE_DIR}/popMetadat.f90
+                    ${MIZUROUTE_DIR}/histVars_data.f90
+                    ${MIZUROUTE_DIR}/historyFile.f90
+                    ${MIZUROUTE_DIR}/allocation.f90
+                )
+                SET(MIZUROUTE_INIT
+                    ${MIZUROUTE_DIR}/network_topo.f90
+                    ${MIZUROUTE_DIR}/process_param.f90
+                    ${MIZUROUTE_DIR}/process_gage_meta.f90
+                    ${MIZUROUTE_DIR}/process_ntopo.f90
+                    ${MIZUROUTE_DIR}/pfafstetter.f90
+                    ${MIZUROUTE_DIR}/domain_decomposition.f90
+                )
+                SET(MIZUROUTE_IO
+                    ${MIZUROUTE_DIR}/process_remap.f90
+                    ${MIZUROUTE_DIR}/read_control.f90
+                    ${MIZUROUTE_DIR}/read_param.f90
+                    ${MIZUROUTE_DIR}/read_streamSeg.f90
+                    ${MIZUROUTE_DIR}/write_streamSeg.f90
+                    ${MIZUROUTE_DIR}/standalone/read_runoff.f90
+                    ${MIZUROUTE_DIR}/standalone/get_basin_runoff.f90
+                    ${MIZUROUTE_DIR}/standalone/read_remap.f90
+                     ${MIZUROUTE_DIR}/io_rpointfile.f90
+                    ${MIZUROUTE_DIR}/read_restart.f90
+                     ${MIZUROUTE_DIR}/pio_decomp_data.f90
+                    ${MIZUROUTE_DIR}/write_restart_pio.f90
+                    ${MIZUROUTE_DIR}/write_simoutput_pio.f90
+                )
+                SET(MIZUROUTE_CORE
+                    ${MIZUROUTE_DIR}/advection_diffusion.f90
+                    ${MIZUROUTE_DIR}/data_assimilation.f90
+                    ${MIZUROUTE_DIR}/accum_runoff.f90
+                    ${MIZUROUTE_DIR}/basinUH.f90
+                    ${MIZUROUTE_DIR}/water_balance.f90
+                    ${MIZUROUTE_DIR}/lake_route.f90
+                    ${MIZUROUTE_DIR}/irf_route.f90
+                    ${MIZUROUTE_DIR}/kwt_route.f90
+                    ${MIZUROUTE_DIR}/kwe_route.f90
+                    ${MIZUROUTE_DIR}/mc_route.f90
+                    ${MIZUROUTE_DIR}/dfw_route.f90
+                    ${MIZUROUTE_DIR}/main_route.f90
+                    ${MIZUROUTE_DIR}/tracer.f90
+                    ${MIZUROUTE_DIR}/mpi_process.f90
+                    ${MIZUROUTE_DIR}/init_model_data.f90
+                     ${MIZUROUTE_DIR}/standalone/model_setup.f90
+                    ${OPENWQ_INTERFACE_DIR}/mizuroute_openwq.f90
+                )
+                SET(MIZUROUTE_DRIVER 
+                    ${MIZUROUTE_DIR}/standalone/route_runoff.f90
+                )
+                # Stitch together MIZUROUTE programs
+                SET(MIZUROUTE_MOD_ALL
+                    ${MIZUROUTE_UTILS}
+                    ${MIZUROUTE_DATATYPES}
+                    ${MIZUROUTE_INIT}
+                    ${MIZUROUTE_IO}
+                    ${MIZUROUTE_CORE})
+
+
+                # Setting MizuRoute sources
+                #FILE(GLOB OPENWQ_SOURCES 
+                #        ${OPENWQ_DIR}/src/*.cpp
+                #        ${OPENWQ_INTERFACE_DIR}/OpenWQ_hydrolink.cpp
+                 #       ${OPENWQ_INTERFACE_DIR}/OpenWQ_interface.cpp)
+
+                SET(CMAKE_CXX_STANDARD 17)
+
+                IF("${COMPILE_MODE}" STREQUAL "Debug")
+                        # -cpp: run the C preprocessor on the Fortran sources so the
+                        # #if defined(VERSION)/#endif guards in mizuRoute (e.g.
+                        # src/standalone/model_setup.f90) are handled instead of
+                        # emitting "Illegal preprocessor directive" warnings.
+                        SET(CMAKE_Fortran_FLAGS "-g3 -Wall -fmax-errors=0 -fbacktrace -fcheck=all -ffpe-trap=zero -ffree-line-length-none -lstdc++ -cpp")
+                        SET(CMAKE_CXX_FLAGS "-g3 -O0 -Wall -pedantic")
+                ELSEIF("${COMPILE_MODE}" STREQUAL "Release")
+                        # -cpp: see note in the Debug branch above.
+                        SET(CMAKE_Fortran_FLAGS "-O3 -fmax-errors=0 -ffree-line-length-none -lstdc++ -fopenmp -cpp")
+                        # OPTIMIZED #15: Added -march=native, -DARMA_NO_DEBUG, -DNDEBUG, -funroll-loops
+                        SET(CMAKE_CXX_FLAGS "-O3 -march=native -DARMA_NO_DEBUG -DNDEBUG -funroll-loops ${OpenMP_CXX_FLAGS}")
+                        FIND_PACKAGE(OpenMP)
+                ENDIF()
+
+                FIND_PACKAGE(Armadillo REQUIRED) # don't forget to activate HDF5 support when installing Armadillo
+                FIND_PACKAGE(HDF5 REQUIRED)
+                FIND_PACKAGE(netCDF REQUIRED)
+                FIND_PACKAGE(LAPACK REQUIRED)
+                FIND_PACKAGE(PhreeqcRM REQUIRED)
+                FIND_PACKAGE(SUNDIALS REQUIRED)
+
+                MESSAGE(STATUS "ARMADILLO: ${ARMADILLO_INCLUDE_DIR}")
+                MESSAGE(STATUS "PHREEQC: ${PhreeqcRM_INCLUDE_DIR}")
+
+                set(CMAKE_Fortran_COMPILER mpif90)
+
+                SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${EXEC_DIR})
+
+                # compile openWQ into an object file
+                ADD_LIBRARY(OPENWQ_OBJ OBJECT 
+                        ${OPENWQ_SOURCES})
+                TARGET_INCLUDE_DIRECTORIES(OPENWQ_OBJ PRIVATE
+                        ${ARMADILLO_INCLUDE_DIR}
+                        ${HDF5_INCLUDE_DIRS}
+                        ${PHREEQCRM_INCLUDE_DIR}
+                        ${OpenMP_INCLUDE_DIR}
+                        ${OPENWQ_DIR}/src/)
+                TARGET_LINK_LIBRARIES(OPENWQ_OBJ PUBLIC
+                        ${ARMADILLO_LIBRARIES}
+                        PhreeqcRM::PhreeqcRM
+                        SUNDIALS::cvode
+                        ${HDF5_C_LIBRARY_hdf5})
+
+                IF(OpenMP_CXX_FOUND)
+                        MESSAGE("** OpenWQ **: OpenMP enabled!")
+                        TARGET_LINK_LIBRARIES(
+                                OPENWQ_OBJ PUBLIC 
+                                OpenMP::OpenMP_CXX)
+                ENDIF()
+
+                # Path to PIO installation
+                #set(PIO_ROOT ${PARENT_DIR}/lib/piolib/piolib)
+                set(PIO_ROOT /opt/piolib)
+
+                # Create the executable with openWQ coupled to Mizuroute                 
+                ADD_EXECUTABLE(${exec_name}
+                        ${MIZUROUTE_MOD_ALL}
+                        ${MIZUROUTE_DRIVER})
+                SET_PROPERTY(TARGET ${exec_name} PROPERTY LINKER_LANGUAGE Fortran)
+                TARGET_INCLUDE_DIRECTORIES(
+                        ${exec_name} PUBLIC
+                        ${LAPACK_INCLUDES}
+                        ${netCDF_INCLUDES}
+                        ${PIO_ROOT}/lib/
+                        ${PIO_ROOT}/include/
+                        "/usr/include/"
+                        "/code/")
+                TARGET_LINK_LIBRARIES(
+                        ${exec_name} PUBLIC
+                        ${NETCDF_LIB_PATH}
+                        ${PIO_ROOT}/lib/libgptl.a
+                        ${PIO_ROOT}/lib/libpiof.a
+                        ${PIO_ROOT}/lib/libpioc.a
+                        -lpnetcdf
+                        ${LAPACK_LIBRARIES}
+                        ${netCDF_LIBRARIES}
+                        OPENWQ_OBJ)
+
+        ELSE()
+
+                # Apple and Windows not supported
+                IF(UNIX AND APPLE)
+                        MESSAGE(STATUS "** OpenWQ: current platform is MacOS")
+                ELSE()
+                        MESSAGE(STATUS "** OpenWQ: current platform is Windows")
+                ENDIF()
+                MESSAGE(STATUS "Not supported yet!")
+                MESSAGE(STATUS "Please compile the code inside the Docker container!")
+                MESSAGE(STATUS "See intructions in the CMakeLists.txt.")
+
+        ENDIF()
+        
+# ..................
+# IF TARGET = mizuroute_lakes_cslm_openwq
+# Only supports compilation in linux
+# ..................
+ELSEIF("${COMPILE_TARGET}" STREQUAL "mizuroute_lakes_cslm_openwq")
+
+        SET(exec_name "${COMPILE_TARGET}_${COMPILE_MODE}")
+
+        # Choose where to create the executable
+        SET(PARENT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+        IF(UNIX AND NOT APPLE)
+
+                MESSAGE(STATUS "** OpenWQ ** current platform is Linux")
+
+                # Declare use of multiple Languages
+                PROJECT("${COMPILE_TARGET}" LANGUAGES CXX Fortran)
+
+                # C needs to be enables
+                ENABLE_LANGUAGE(C)
+                
+                # Verify language compilers can talk to each other
+                INCLUDE(FortranCInterface)
+                FortranCInterface_VERIFY(CXX)
+
+                # Get paths to source code
+                SET(OPENWQ_DIR ${PARENT_DIR}/openwq/openwq)
+                SET(OPENWQ_INTERFACE_DIR ${OPENWQ_DIR}/..)
+                SET(EXEC_DIR ${OPENWQ_DIR}/bin)
+
+                # File definitions for subcomponents - For OpenWQ
+                FILE(GLOB OPENWQ_SOURCES 
+                    ${OPENWQ_DIR}/src/*.cpp 
+                    ${OPENWQ_DIR}/src/global/*.cpp
+                    ${OPENWQ_DIR}/src/extwatflux_ss/*.cpp
+                    ${OPENWQ_DIR}/src/extwatflux_ss/json_SetConfigInfo/*.cpp
+                    ${OPENWQ_DIR}/src/initiate/*.cpp
+                    ${OPENWQ_DIR}/src/readjson/*.cpp
+                    ${OPENWQ_DIR}/src/readjson/json_utils/*.cpp
+                    ${OPENWQ_DIR}/src/couplercalls/*.cpp
+                    ${OPENWQ_DIR}/src/output/*.cpp
+                    ${OPENWQ_DIR}/src/output/json_SetConfigInfo/*.cpp
+                    ${OPENWQ_DIR}/src/compute/*.cpp
+                    ${OPENWQ_DIR}/src/compute/json_SetConfigInfo/*.cpp
+                    ${OPENWQ_DIR}/src/compute/solver_backeuler/*.cpp
+                    ${OPENWQ_DIR}/src/compute/solver_sundials/*.cpp
+                    ${OPENWQ_DIR}/src/units/*.cpp
+                    ${OPENWQ_DIR}/src/utils/*.cpp
+                    ${OPENWQ_DIR}/src/utils/models_toolbox/*.cpp
+                    ${OPENWQ_DIR}/src/models_CH/*.cpp
+                    ${OPENWQ_DIR}/src/models_CH/bgc_flex/*.cpp
+                    ${OPENWQ_DIR}/src/models_CH/PHREEQC/*.cpp
+                    ${OPENWQ_DIR}/src/models_TD/*.cpp
+                    ${OPENWQ_DIR}/src/models_TD/native_adv/*.cpp
+                    ${OPENWQ_DIR}/src/models_TD/native_advdisp/*.cpp
+                    ${OPENWQ_DIR}/src/models_LE/*.cpp
+                    ${OPENWQ_DIR}/src/models_LE/native_boundmix/*.cpp
+                    ${OPENWQ_DIR}/src/models_SI/*.cpp
+                    ${OPENWQ_DIR}/src/models_SI/langmuir/*.cpp
+                    ${OPENWQ_DIR}/src/models_SI/freundlich/*.cpp
+                    ${OPENWQ_DIR}/src/models_TS/*.cpp
+                    ${OPENWQ_DIR}/src/models_TS/hype_hvb/*.cpp
+                    ${OPENWQ_DIR}/src/models_TS/hype_mmf/*.cpp
+                    ${OPENWQ_INTERFACE_DIR}/OpenWQ_hydrolink.cpp
+                    ${OPENWQ_INTERFACE_DIR}/OpenWQ_interface.cpp)
+                
+                SET(OPENWQ_INCLUDES
+                    ${OPENWQ_DIR}/src/global/
+                    ${PARENT_DIR})
+
+                SET(MIZUROUTE_DIR ${PARENT_DIR}/src)
+
+                # Setting mizuroute
+                SET(MIZUROUTE_UTILS
+                    ${MIZUROUTE_DIR}/hydraulic.f90
+                     ${MIZUROUTE_DIR}/mpi_utils.f90
+                     ${MIZUROUTE_DIR}/model_utils.f90
+                    ${MIZUROUTE_DIR}/gamma_func.f90
+                    ${MIZUROUTE_DIR}/nrtype.f90
+                )
+                SET(MIZUROUTE_DATATYPES
+                    ${OPENWQ_INTERFACE_DIR}/openWQ.f90 # needs to be compiled before globalData
+                    ${MIZUROUTE_DIR}/nrtype.f90
+                    ${MIZUROUTE_DIR}/public_var.f90
+                    ${MIZUROUTE_DIR}/nr_utils.f90
+                    ${MIZUROUTE_DIR}/ncio_utils.f90
+                    ${MIZUROUTE_DIR}/pio_utils.f90
+                    ${MIZUROUTE_DIR}/ascii_utils.f90
+                    ${MIZUROUTE_DIR}/datetime_data.f90
+                    ${MIZUROUTE_DIR}/dataTypes.f90
+                    ${MIZUROUTE_DIR}/var_lookup.f90
+                    ${MIZUROUTE_DIR}/base_route.f90
+                    ${MIZUROUTE_DIR}/csv_data.f90
+                    ${MIZUROUTE_DIR}/gageMeta_data.f90
+                    ${MIZUROUTE_DIR}/obs_data.f90
+                    ${MIZUROUTE_DIR}/globalData.f90
+                    ${MIZUROUTE_DIR}/popMetadat.f90
+                    ${MIZUROUTE_DIR}/histVars_data.f90
+                    ${MIZUROUTE_DIR}/historyFile.f90
+                    ${MIZUROUTE_DIR}/allocation.f90
+                )
+                SET(MIZUROUTE_INIT
+                    ${MIZUROUTE_DIR}/network_topo.f90
+                    ${MIZUROUTE_DIR}/process_param.f90
+                    ${MIZUROUTE_DIR}/process_gage_meta.f90
+                    ${MIZUROUTE_DIR}/process_ntopo.f90
+                    ${MIZUROUTE_DIR}/pfafstetter.f90
+                    ${MIZUROUTE_DIR}/domain_decomposition.f90
+                )
+                SET(MIZUROUTE_IO
+                    ${MIZUROUTE_DIR}/process_remap.f90
+                    ${MIZUROUTE_DIR}/read_control.f90
+                    ${MIZUROUTE_DIR}/read_param.f90
+                    ${MIZUROUTE_DIR}/read_streamSeg.f90
+                    ${MIZUROUTE_DIR}/write_streamSeg.f90
+                    ${MIZUROUTE_DIR}/standalone/read_runoff.f90
+                    ${MIZUROUTE_DIR}/standalone/get_basin_runoff.f90
+                    ${MIZUROUTE_DIR}/standalone/read_remap.f90
+                     ${MIZUROUTE_DIR}/io_rpointfile.f90
+                    ${MIZUROUTE_DIR}/read_restart.f90
+                     ${MIZUROUTE_DIR}/pio_decomp_data.f90
+                    ${MIZUROUTE_DIR}/write_restart_pio.f90
+                    ${MIZUROUTE_DIR}/write_simoutput_pio.f90
+                )
+                SET(MIZUROUTE_CORE
+                    ${MIZUROUTE_DIR}/advection_diffusion.f90
+                    ${MIZUROUTE_DIR}/data_assimilation.f90
+                    ${MIZUROUTE_DIR}/accum_runoff.f90
+                    ${MIZUROUTE_DIR}/basinUH.f90
+                    ${MIZUROUTE_DIR}/water_balance.f90
+                    ${MIZUROUTE_DIR}/lake_route.f90
+                    ${MIZUROUTE_DIR}/irf_route.f90
+                    ${MIZUROUTE_DIR}/kwt_route.f90
+                    ${MIZUROUTE_DIR}/kwe_route.f90
+                    ${MIZUROUTE_DIR}/mc_route.f90
+                    ${MIZUROUTE_DIR}/dfw_route.f90
+                    ${MIZUROUTE_DIR}/main_route.f90
+                    ${MIZUROUTE_DIR}/tracer.f90
+                    ${MIZUROUTE_DIR}/mpi_process.f90
+                    ${MIZUROUTE_DIR}/init_model_data.f90
+                     ${MIZUROUTE_DIR}/standalone/model_setup.f90
+                    ${OPENWQ_INTERFACE_DIR}/mizuroute_openwq.f90
+                )
+
+                SET(MIZUROUTE_CSLM_WRAPPER
+                    ${MIZUROUTE_DIR}/cslm_wrapper.f90    
+                )
+
+                SET(MIZUROUTE_DRIVER 
+                    ${MIZUROUTE_DIR}/standalone/route_runoff.f90
+                )
+                # Stitch together MIZUROUTE programs
+                SET(MIZUROUTE_MOD_ALL
+                    ${MIZUROUTE_UTILS}
+                    ${MIZUROUTE_DATATYPES}
+                    ${MIZUROUTE_INIT}
+                    ${MIZUROUTE_IO}
+                    ${MIZUROUTE_CSLM_WRAPPER}
+                    ${MIZUROUTE_CORE})
+
+                # Adding CSLM
+                SET(CSLM_DIR ${PARENT_DIR}/src/CSLM)
+                SET(CSLM_ALL 
+                    ${CSLM_DIR}/CLASSI.f	
+                    ${CSLM_DIR}/DRCOEFL.f	
+                    ${CSLM_DIR}/LKTRANS.f	
+                    ${CSLM_DIR}/runCSLM.f	
+                    ${CSLM_DIR}/SHELTL.f	
+                    ${CSLM_DIR}/SNOALBA.f	
+                    ${CSLM_DIR}/TLSPOST.f	
+                    ${CSLM_DIR}/TSOLVE.f
+                    ${CSLM_DIR}/CSLM.f		
+                    ${CSLM_DIR}/EQNST.f		
+                    ${CSLM_DIR}/MIXLYR.f	
+                    #${CSLM_DIR}/RUNLAKE.f	
+                    ${CSLM_DIR}/SNINFL.f	
+                    ${CSLM_DIR}/SNOALBW.f	
+                    ${CSLM_DIR}/TLSPREP.f	
+                    ${CSLM_DIR}/TSOLVL.f
+                    ${CSLM_DIR}/DRCOEF.f	
+                    ${CSLM_DIR}/FREECONV.f	
+                    ${CSLM_DIR}/SEDHFLX.f	
+                    ${CSLM_DIR}/SNOADD.f	
+                    ${CSLM_DIR}/SNOVAP.f	
+                    ${CSLM_DIR}/TMELT.f		
+                    ${CSLM_DIR}/XIT.f)
+
+                SET(CMAKE_CXX_STANDARD 17)
+
+                IF("${COMPILE_MODE}" STREQUAL "Debug")
+                        # -cpp: run the C preprocessor on the Fortran sources so the
+                        # #if defined(VERSION)/#endif guards in mizuRoute (e.g.
+                        # src/standalone/model_setup.f90) are handled instead of
+                        # emitting "Illegal preprocessor directive" warnings.
+                        SET(CMAKE_Fortran_FLAGS "-g3 -Wall -fmax-errors=0 -fbacktrace -fcheck=all -ffpe-trap=zero -ffree-line-length-none -lstdc++ -cpp")
+                        SET(CMAKE_CXX_FLAGS "-g3 -O0 -Wall -pedantic")
+                ELSEIF("${COMPILE_MODE}" STREQUAL "Release")
+                        # -cpp: see note in the Debug branch above.
+                        SET(CMAKE_Fortran_FLAGS "-O3 -fmax-errors=0 -ffree-line-length-none -lstdc++ -fopenmp -cpp")
+                        # OPTIMIZED #15: Added -march=native, -DARMA_NO_DEBUG, -DNDEBUG, -funroll-loops
+                        SET(CMAKE_CXX_FLAGS "-O3 -march=native -DARMA_NO_DEBUG -DNDEBUG -funroll-loops ${OpenMP_CXX_FLAGS}")
+                        FIND_PACKAGE(OpenMP)
+                ENDIF()
+
+                FIND_PACKAGE(Armadillo REQUIRED) # don't forget to activate HDF5 support when installing Armadillo
+                FIND_PACKAGE(HDF5 REQUIRED)
+                FIND_PACKAGE(netCDF REQUIRED)
+                FIND_PACKAGE(LAPACK REQUIRED)
+                FIND_PACKAGE(PhreeqcRM REQUIRED)
+                FIND_PACKAGE(SUNDIALS REQUIRED)
+
+                MESSAGE(STATUS "ARMADILLO: ${ARMADILLO_INCLUDE_DIR}")
+                MESSAGE(STATUS "PHREEQC: ${PhreeqcRM_INCLUDE_DIR}")
+
+                set(CMAKE_Fortran_COMPILER mpif90)
+
+                SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${EXEC_DIR})
+
+                # Compile CSLM into an object file FIRST (Fortran 77 fixed format)
+                ADD_LIBRARY(CSLM_OBJ OBJECT 
+                        ${CSLM_ALL})
+                SET_TARGET_PROPERTIES(CSLM_OBJ PROPERTIES
+                        COMPILE_FLAGS "-ffixed-form -std=legacy"
+                        )
+                TARGET_LINK_LIBRARIES(CSLM_OBJ PUBLIC
+                        ${LAPACK_LIBRARIES})
+
+                # compile openWQ into an object file
+                ADD_LIBRARY(OPENWQ_OBJ OBJECT 
+                        ${OPENWQ_SOURCES})
+                TARGET_INCLUDE_DIRECTORIES(OPENWQ_OBJ PRIVATE
+                        ${ARMADILLO_INCLUDE_DIR}
+                        ${HDF5_INCLUDE_DIRS}
+                        ${PHREEQCRM_INCLUDE_DIR}
+                        ${OpenMP_INCLUDE_DIR}
+                        ${OPENWQ_DIR}/src/)
+                TARGET_LINK_LIBRARIES(OPENWQ_OBJ PUBLIC
+                        ${ARMADILLO_LIBRARIES}
+                        PhreeqcRM::PhreeqcRM
+                        SUNDIALS::cvode
+                        ${HDF5_C_LIBRARY_hdf5})
+
+                IF(OpenMP_CXX_FOUND)
+                        MESSAGE("** OpenWQ **: OpenMP enabled!")
+                        TARGET_LINK_LIBRARIES(
+                                OPENWQ_OBJ PUBLIC 
+                                OpenMP::OpenMP_CXX)
+                ENDIF()
+
+                # Path to PIO installation
+                set(PIO_ROOT /opt/piolib)
+
+                # Create the executable with openWQ coupled to Mizuroute
+                # CSLM_ALL removed - now using CSLM_OBJ instead
+                ADD_EXECUTABLE(${exec_name}
+                        ${MIZUROUTE_MOD_ALL}
+                        ${MIZUROUTE_DRIVER})
+                        
+                SET_PROPERTY(TARGET ${exec_name} PROPERTY LINKER_LANGUAGE Fortran)
+                TARGET_INCLUDE_DIRECTORIES(
+                        ${exec_name} PUBLIC
+                        ${LAPACK_INCLUDES}
+                        ${netCDF_INCLUDES}
+                        ${PIO_ROOT}/lib/
+                        ${PIO_ROOT}/include/
+                        "/usr/include/"
+                        "/code/")
+                TARGET_LINK_LIBRARIES(
+                        ${exec_name} PUBLIC
+                        ${NETCDF_LIB_PATH}
+                        ${PIO_ROOT}/lib/libgptl.a
+                        ${PIO_ROOT}/lib/libpiof.a
+                        ${PIO_ROOT}/lib/libpioc.a
+                        -lpnetcdf
+                        ${LAPACK_LIBRARIES}
+                        ${netCDF_LIBRARIES}
+                        CSLM_OBJ
+                        OPENWQ_OBJ)
+
+        ELSE()
+
+                # Apple and Windows not supported
+                IF(UNIX AND APPLE)
+                        MESSAGE(STATUS "** OpenWQ: current platform is MacOS")
+                ELSE()
+                        MESSAGE(STATUS "** OpenWQ: current platform is Windows")
+                ENDIF()
+                MESSAGE(STATUS "Not supported yet!")
+                MESSAGE(STATUS "Please compile the code inside the Docker container!")
+                MESSAGE(STATUS "See intructions in the CMakeLists.txt.")
+
+        ENDIF()
+
+# ..................
+# IF TARGET = fluxos_openwq
+# Only supports compilation in linux
+# ..................
+ELSEIF("${COMPILE_TARGET}" STREQUAL "fluxos_openwq")
+
+
+        # Choose where to create the executable
+        SET(PARENT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
+        SET(EXEC_DIR ${PARENT_DIR}/bin/)
+
+        IF(UNIX AND NOT APPLE)
+
+                MESSAGE(STATUS "** OpenWQ ** current platform is Linux")
+
+                # Get paths to source code
+                SET(FLUXOS_DIR ${PARENT_DIR}/src/fluxos)
+                SET(OPENWQ_DIR ${PARENT_DIR}/src/openwq/openwq/src)
+                SET(OPENWQ_INTERFACE_DIR ${PARENT_DIR}/src/openwq)
+
+                # Setting MizuRoute sources
+                FILE(GLOB SOURCES
+                        ${FLUXOS_DIR}/*.cpp
+                        ${OPENWQ_DIR}/*.cpp
+                        ${OPENWQ_INTERFACE_DIR}/OpenWQ_hydrolink.cpp)
+
+                LIST(REMOVE_ITEM SOURCES ${OPENWQ_INTERFACE_DIR}/main*.cpp)
+
+
+                IF("${COMPILE_MODE}" STREQUAL "Debug")
+                        SET(CMAKE_CXX_FLAGS "-g3 -O0 -Wall -pedantic")
+                ELSEIF("${COMPILE_MODE}" STREQUAL "Release")
+                        # OPTIMIZED #15: Added -march=native, -DARMA_NO_DEBUG, -DNDEBUG, -funroll-loops
+                        SET(CMAKE_CXX_FLAGS "-O3 -march=native -DARMA_NO_DEBUG -DNDEBUG -funroll-loops ${OpenMP_CXX_FLAGS}")
+                        FIND_PACKAGE(OpenMP)
+                ENDIF()
+
+                FIND_PACKAGE(Armadillo REQUIRED) # don't forget to activate HDF5 support when installing Armadillo
+                FIND_PACKAGE(HDF5 REQUIRED)
+                #FIND_PACKAGE(netCDF REQUIRED)
+                #FIND_PACKAGE(LAPACK REQUIRED)
+
+                SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${EXEC_DIR})
+
+                # Create the executable with openWQ coupled to CRHM   
+                ADD_EXECUTABLE(
+                        ${exec_name}
+                        ${SOURCES})
+
+                TARGET_INCLUDE_DIRECTORIES(
+                        ${exec_name} PUBLIC 
+                        ${ARMADILLO_INCLUDE_DIR}
+                        ${HDF5_INCLUDE_DIRS}
+                        "/usr/include/"
+                        "/code/")
+
+                TARGET_LINK_LIBRARIES(
+                        ${exec_name} PUBLIC
+                        ${NETCDF_LIB_PATH}
+                        ${ARMADILLO_LIBRARIES}
+                        ${HDF5_C_LIBRARY_hdf5}
+                        )
+                
+                IF(OpenMP_CXX_FOUND)
+                        MESSAGE("** OpenWQ **: OpenMP enabled!")
+                        TARGET_LINK_LIBRARIES(
+                                ${exec_name} PUBLIC 
+                                OpenMP::OpenMP_CXX)
+                ENDIF()
+
+
+        ELSE()
+
+                # Apple and Windows not supported
+                IF(UNIX AND APPLE)
+                        MESSAGE(STATUS "** OpenWQ: current platform is MacOS")
+                ELSE()
+                        MESSAGE(STATUS "** OpenWQ: current platform is Windows")
+                ENDIF()
+                MESSAGE(STATUS "Not supported yet!")
+                MESSAGE(STATUS "Please compile the code inside the Docker container!")
+                MESSAGE(STATUS "See intructions in the CMakeLists.txt.")
+
+        ENDIF()
+# ..................
+# IF TARGET = summa-mizuroute_openwq
+# SUMMA with its internally coupled mizuRoute (CH-Earth/summa, develop branch).
+# The SUMMA tree carries the complete CMake build of SUMMA, mizuRoute, toml-f and
+# of this openWQ (build/source/openwq), so the tree is built here as an external
+# project and the executable is copied to bin/ under the openWQ naming.
+# Expected layout: <summa>/build/source/openwq/openwq is this folder, and the git
+# submodules <summa>/external/mizuRoute and <summa>/external/toml-f are checked out.
+# Dependency hints (CMAKE_PREFIX_PATH, SUNDIALS_DIR) are forwarded. PhreeqcRM must be
+# a SHARED library because SUMMA is built as a shared library: set -DSUMMA_PHREEQCRM_DIR
+# to its cmake folder, or build it into <summa>/build/source/openwq/_deps/phreeqcrm-install
+# (used automatically when present; see <summa>/build/source/openwq/README.md).
+# Only supports compilation in linux
+# ..................
+ELSEIF("${COMPILE_TARGET}" STREQUAL "summa-mizuroute_openwq")
+
+    if(NOT UNIX)
+        MESSAGE(STATUS "Current Operating System is not supported yet!")
+    endif()
+
+    PROJECT(openwq_summa_mizuroute LANGUAGES CXX Fortran)
+    INCLUDE(ExternalProject)
+
+    SET(exec_name "${COMPILE_TARGET}_${COMPILE_MODE}")
+    # the SUMMA tree: -DSUMMA_DIR=<path>, else four levels up (<summa>/build/source/openwq/openwq)
+    if(DEFINED SUMMA_DIR AND NOT "${SUMMA_DIR}" STREQUAL "")
+        get_filename_component(SUMMA_DIR ${SUMMA_DIR} ABSOLUTE)
+    else()
+        get_filename_component(SUMMA_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../.. ABSOLUTE)
+    endif()
+    SET(EXEC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/bin)
+    SET(SUMMA_BUILD_DIR ${CMAKE_CURRENT_BINARY_DIR}/summa-mizuroute_build)
+
+    if(NOT EXISTS ${SUMMA_DIR}/build/source/mizuroute/CMakeLists.txt)
+        MESSAGE(FATAL_ERROR "summa-mizuroute_openwq: ${SUMMA_DIR} is not a SUMMA tree with the internal "
+                            "mizuRoute coupling (build/source/mizuroute missing). This folder must be "
+                            "<summa>/build/source/openwq/openwq of the CH-Earth/summa develop branch, with the "
+                            "WHOLE SUMMA tree visible: inside a container bind the tree, e.g. "
+                            "'apptainer shell --bind <summa>:/code/summa openwq.sif' and configure from "
+                            "/code/summa/build/source/openwq/openwq, or pass -DSUMMA_DIR=<summa>.")
+    endif()
+    if(NOT EXISTS ${SUMMA_DIR}/external/mizuRoute/route/build/src/dataTypes.f90
+       OR NOT EXISTS ${SUMMA_DIR}/external/toml-f/CMakeLists.txt)
+        MESSAGE(FATAL_ERROR "summa-mizuroute_openwq: the mizuRoute and toml-f submodules are not checked out. "
+                            "Run: git -C ${SUMMA_DIR} submodule update --init external/mizuRoute external/toml-f")
+    endif()
+
+    # SUMMA solver (IDA/KINSOL); openWQ itself always uses SUNDIALS CVODE
+    if(SOLVER_TYPE MATCHES Sundials)
+        SET(SUMMA_USE_SUNDIALS ON)
+        SET(SUMMA_EXE summa_sundials_openwq_mizuroute.exe)
+    else()
+        SET(SUMMA_USE_SUNDIALS OFF)
+        SET(SUMMA_EXE summa_openwq_mizuroute.exe)
+    endif()
+
+    SET(SUMMA_CMAKE_ARGS
+        -DUSE_OPENWQ=ON
+        -DUSE_MIZUROUTE=ON
+        -DUSE_SUNDIALS=${SUMMA_USE_SUNDIALS}
+        -DUSE_MPI=OFF
+        -DUSE_NEXTGEN=OFF
+        -DCMAKE_BUILD_TYPE=${COMPILE_MODE}
+        -DCMAKE_Fortran_COMPILER=${CMAKE_Fortran_COMPILER}
+        -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
+    # PhreeqcRM: SUMMA is a shared library, so it needs a SHARED PhreeqcRM:
+    # -DSUMMA_PHREEQCRM_DIR=<cmake folder of a shared install>, else one is built
+    # once into <summa>/build/source/openwq/_deps (or -DSUMMA_OPENWQ_DEPS_DIR)
+    if(DEFINED SUMMA_PHREEQCRM_DIR)
+        LIST(APPEND SUMMA_CMAKE_ARGS -DPhreeqcRM_DIR=${SUMMA_PHREEQCRM_DIR})
+    else()
+        if(DEFINED SUMMA_OPENWQ_DEPS_DIR AND NOT "${SUMMA_OPENWQ_DEPS_DIR}" STREQUAL "")
+            SET(SUMMA_DEPS_DIR ${SUMMA_OPENWQ_DEPS_DIR})
+        else()
+            SET(SUMMA_DEPS_DIR ${SUMMA_DIR}/build/source/openwq/_deps)
+        endif()
+        OPENWQ_SHARED_PHREEQCRM(${SUMMA_DEPS_DIR} SUMMA_PHREEQCRM_CMAKE_DIR)
+        LIST(APPEND SUMMA_CMAKE_ARGS -DPhreeqcRM_DIR=${SUMMA_PHREEQCRM_CMAKE_DIR})
+        MESSAGE(STATUS "** OpenWQ **: PhreeqcRM (shared) ${SUMMA_PHREEQCRM_CMAKE_DIR}")
+    endif()
+    if(DEFINED SUNDIALS_DIR)
+        LIST(APPEND SUMMA_CMAKE_ARGS -DSUNDIALS_DIR=${SUNDIALS_DIR})
+    endif()
+    if(DEFINED CMAKE_PREFIX_PATH)
+        STRING(REPLACE ";" "|" SUMMA_PREFIX_PATH "${CMAKE_PREFIX_PATH}")
+        LIST(APPEND SUMMA_CMAKE_ARGS -DCMAKE_PREFIX_PATH=${SUMMA_PREFIX_PATH})
+    endif()
+
+    MESSAGE(STATUS "** OpenWQ **: SUMMA tree ${SUMMA_DIR}")
+    MESSAGE(STATUS "** OpenWQ **: SUMMA build dir ${SUMMA_BUILD_DIR}")
+    MESSAGE(STATUS "** OpenWQ **: executable ${EXEC_DIR}/${exec_name}")
+
+    FILE(MAKE_DIRECTORY ${EXEC_DIR})
+
+    ExternalProject_Add(summa_mizuroute_tree
+        SOURCE_DIR        ${SUMMA_DIR}/build
+        BINARY_DIR        ${SUMMA_BUILD_DIR}
+        CMAKE_COMMAND     ${CMAKE_COMMAND} -E env FC=${CMAKE_Fortran_COMPILER} ${CMAKE_COMMAND}
+        CMAKE_ARGS        ${SUMMA_CMAKE_ARGS}
+        LIST_SEPARATOR    |
+        BUILD_ALWAYS      ON
+        INSTALL_COMMAND   ${CMAKE_COMMAND} -E copy ${SUMMA_DIR}/bin/${SUMMA_EXE} ${EXEC_DIR}/${exec_name}
+        BUILD_BYPRODUCTS  ${SUMMA_DIR}/bin/${SUMMA_EXE})
+
+    # same target name as the executable, as for the other host models
+    ADD_CUSTOM_TARGET(${exec_name} ALL DEPENDS summa_mizuroute_tree)
+
+# ..................
+# IF TARGET = python_openwq
+# Python extension module "openwq_py" (pybind11) for Python host models
+# (differentiable HBV of hydroDL2/dMG). Python, pybind11 and the shared PhreeqcRM
+# were resolved above (before the common FIND_PACKAGE calls). The module is
+# compiled from <host>/openwq/OpenWQ_hydrolink.cpp and written to <host>/openwq.
+# ..................
+ELSEIF("${COMPILE_TARGET}" STREQUAL "python_openwq")
+
+    if(NOT UNIX)
+        MESSAGE(STATUS "Current Operating System is not supported yet!")
+    endif()
+
+    SET(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+    # OpenWQ core without any other host-model interface files
+    SET(PY_SOURCES ${OPENWQ_SOURCES})
+    LIST(FILTER PY_SOURCES EXCLUDE REGEX "OpenWQ_hydrolink\\.cpp$|OpenWQ_interface\\.cpp$")
+    LIST(APPEND PY_SOURCES ${OPENWQ_INTERFACE_DIR}/OpenWQ_hydrolink.cpp)
+
+    pybind11_add_module(openwq_py MODULE ${PY_SOURCES})
+    TARGET_INCLUDE_DIRECTORIES(openwq_py PRIVATE
+        ${ARMADILLO_INCLUDE_DIR}
+        ${HDF5_INCLUDE_DIRS}
+        ${PHREEQCRM_INCLUDE_DIR}
+        ${PhreeqcRM_INCLUDE_DIR}
+        ${OPENWQ_INCLUDES}
+        ${OPENWQ_INTERFACE_DIR})
+    TARGET_LINK_LIBRARIES(openwq_py PRIVATE
+        ${ARMADILLO_LIBRARIES}
+        SUNDIALS::cvode
+        PhreeqcRM::PhreeqcRM
+        ${HDF5_C_LIBRARY_hdf5})
+    IF(OpenMP_CXX_FOUND)
+        MESSAGE("** OpenWQ **: OpenMP enabled!")
+        TARGET_LINK_LIBRARIES(openwq_py PRIVATE OpenMP::OpenMP_CXX)
+    ENDIF()
+    SET_TARGET_PROPERTIES(openwq_py PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY ${OPENWQ_INTERFACE_DIR}
+        LIBRARY_OUTPUT_DIRECTORY_RELEASE ${OPENWQ_INTERFACE_DIR}
+        LIBRARY_OUTPUT_DIRECTORY_DEBUG ${OPENWQ_INTERFACE_DIR})
+    MESSAGE(STATUS "** OpenWQ **: Python module -> ${OPENWQ_INTERFACE_DIR}/openwq_py<abi>.so")
+
+    # same target name convention as the executables
+    ADD_CUSTOM_TARGET(${exec_name} ALL DEPENDS openwq_py)
+
+ENDIF()

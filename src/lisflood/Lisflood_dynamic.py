@@ -258,6 +258,15 @@ class LisfloodModel_dyn(DynamicModel):
            self.indicatorcalc_module.dynamic()
 
         # ************************************************************
+        # ***** OpenWQ water-quality coupling (one-way, optional) ****
+        # ************************************************************
+        # Inert unless the 'OpenWQ' option is enabled in the settings file, so
+        # default LISFLOOD runs are unchanged. Reads the end-of-step hydrology
+        # state/fluxes and advances the OpenWQ solute balance.
+        if option.get('OpenWQ', False):
+            self.openwq_module.step()
+
+        # ************************************************************
         # ***** WRITING RESULTS: TIME SERIES AND MAPS ****************
         # ************************************************************
         self.output_module.dynamic()

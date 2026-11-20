@@ -1,0 +1,3 @@
+[submodule "src/lisflood/openwq/openwq"]
+	path = src/lisflood/openwq/openwq
+	url = https://github.com/ue-hydro/openwq.git
