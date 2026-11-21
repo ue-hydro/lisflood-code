@@ -5,8 +5,9 @@ nitrogen template, configured ONLY through openWQ's Python template generator.
 Step 1 (host Python with the generator's dependencies) -- generate the inputs:
     python src/lisflood/openwq/model_config_lisflood_nitrogen.py
   = openWQ's supporting_scripts/1_Model_Config/model_config_template.py with
-    hostmodel="lisflood" and BGC template individual_chemicals/nitrogen_simple.json
-    (ORG_N -> NH4-N -> NO3-N -> N2_loss, temperature dependent).
+    hostmodel="lisflood" and BGC template individual_chemicals/nitrogen_basic.json
+    (ORG_N -> NH4-N -> NO3-N -> N2_loss, pure first-order network, no host
+    dependencies). Temperature-dependent templates are also handled (T4).
 
 Step 2 (OpenWQ container, compiled openwq_py from the same openWQ commit):
     PYTHONPATH=src python src/lisflood/openwq/tests/deep_test_nitrogen.py
@@ -19,7 +20,8 @@ was produced by openWQ's generator. It only drives the compiled engine.
   T3  reaction network = template: pure kinetics (no transport, no load) at
       20 C matches an independent Forward-Euler integration of the rate laws
       parsed from the generated BGC file, for every species and compartment
-  T4  temperature dependence: day-1 rates at 25 C / 5 C = theta^20
+  T4  temperature: no-dependency template -> results identical at 5 C and 25 C;
+      temperature-dependent template -> day-1 rates at 25 C / 5 C = theta^20
   T5  full coupled run (advection along LISFLOOD fluxes + NO3-N load +
       reactions, 15 C): exact N budget, non-negative, per-compartment results
   T6  move_array scaling (1e3 .. 1e6 cells) with the same generated inputs
@@ -259,13 +261,20 @@ def t2_t3_t4(host):
         mt = re.search(r"([\d.]+)\^\(T - 20\)", e)
         if mt:
             th[p] = float(mt.group(1))
-    exp_min, exp_den = th["NH4-N"] ** 20, th["N2_loss"] ** 20
     got_min = gain[25.0][0] / gain[5.0][0]
     got_den = gain[25.0][1] / gain[5.0][1]
-    print("T4  temperature: day-1 rate ratio 25C/5C   mineralization %.4f "
-          "(expected %.4f = %.2f^20)   denitrification %.4f (expected %.4f = %.2f^20)"
-          % (got_min, exp_min, th["NH4-N"], got_den, exp_den, th["N2_loss"]))
-    ok4 = abs(got_min / exp_min - 1) < 1e-6 and abs(got_den / exp_den - 1) < 1e-6
+    if not th:
+        # template has no host dependencies: chemistry must ignore temperature
+        print("T4  no host dependencies in the template -> day-1 rates must be "
+              "identical at 5 C and 25 C:  mineralization ratio %.15f  "
+              "denitrification ratio %.15f" % (got_min, got_den))
+        ok4 = got_min == 1.0 and got_den == 1.0
+    else:
+        exp_min, exp_den = th["NH4-N"] ** 20, th["N2_loss"] ** 20
+        print("T4  temperature: day-1 rate ratio 25C/5C   mineralization %.4f "
+              "(expected %.4f = %.2f^20)   denitrification %.4f (expected %.4f = %.2f^20)"
+              % (got_min, exp_min, th["NH4-N"], got_den, exp_den, th["N2_loss"]))
+        ok4 = abs(got_min / exp_min - 1) < 1e-6 and abs(got_den / exp_den - 1) < 1e-6
     return ok2, ok3, ok4, unit
 
 

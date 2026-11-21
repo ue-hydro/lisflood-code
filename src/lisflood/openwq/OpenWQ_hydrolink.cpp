@@ -41,6 +41,13 @@ PYBIND11_MODULE(openwq_py, m) {
              py::arg("src"), py::arg("dst"),
              py::arg("wflux_m3"), py::arg("wmass_src_m3"),
              py::arg("year"), py::arg("month"), py::arg("day"), py::arg("hour") = 0, py::arg("minute") = 0)
+        .def("move_array_to", &OpenWQPyHost::move_array_to,
+             py::arg("src"), py::arg("dst"), py::arg("dst_ix"),
+             py::arg("wflux_m3"), py::arg("wmass_src_m3"),
+             py::arg("year"), py::arg("month"), py::arg("day"), py::arg("hour") = 0, py::arg("minute") = 0)
+        .def("inflow_array", &OpenWQPyHost::inflow_array,
+             py::arg("ewf_name"), py::arg("dst"), py::arg("wflux_m3"),
+             py::arg("year"), py::arg("month"), py::arg("day"), py::arg("hour") = 0, py::arg("minute") = 0)
         .def("inflow", &OpenWQPyHost::inflow,
              py::arg("ewf_name"), py::arg("dst"), py::arg("ix_r"), py::arg("iy_r"), py::arg("iz_r"),
              py::arg("wflux_m3"),
@@ -52,6 +59,10 @@ PYBIND11_MODULE(openwq_py, m) {
              py::arg("icmp"), py::arg("ichem"), py::arg("ix"), py::arg("iy"), py::arg("iz"))
         .def("mass_array", &OpenWQPyHost::mass_array, py::arg("icmp"), py::arg("ichem"))
         .def("total_mass", &OpenWQPyHost::total_mass, py::arg("ichem"))
+        .def("set_mass_array", &OpenWQPyHost::set_mass_array, py::arg("icmp"), py::arg("ichem"), py::arg("mass"))
+        .def("pending_ic_array", &OpenWQPyHost::pending_ic_array, py::arg("icmp"), py::arg("ichem"))
+        .def("set_pending_ic_array", &OpenWQPyHost::set_pending_ic_array,
+             py::arg("icmp"), py::arg("ichem"), py::arg("pending"))
         .def("compartment_names", &OpenWQPyHost::compartment_names)
         .def("ext_flux_names", &OpenWQPyHost::ext_flux_names)
         .def("depend_names", &OpenWQPyHost::depend_names)

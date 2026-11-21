@@ -302,6 +302,62 @@ public:
         }
     }
 
+    // Vectorised move with a per-cell RECIPIENT cell (1-D compartments): cell ix
+    // of `src` sends wflux[ix] to cell dst_ix[ix] of `dst`; dst_ix[ix] < 0 sends it
+    // out of the domain (recipient -1, e.g. a river mouth). Used for the
+    // channel -> downstream-channel transfer along the host's drainage network
+    // (LISFLOOD's LDD), one call for the whole network. Cells with wflux<=0 skipped.
+    void move_array_to(int src, int dst,
+                       py::array_t<int, py::array::c_style | py::array::forcecast> dst_ix,
+                       py::array_t<double, py::array::c_style | py::array::forcecast> wflux,
+                       py::array_t<double, py::array::c_style | py::array::forcecast> wmass_src,
+                       int y, int m, int d, int h, int mi) {
+        require_init("move_array_to");
+        check_cmp(src);
+        check_cmp(dst);
+        const int nx = cmp_nx_[src];
+        if (dst_ix.size() != (py::ssize_t) nx)
+            throw std::invalid_argument("move_array_to(dst_ix): wrong length");
+        const int* pd = dst_ix.data();
+        const double* pf = checked_ptr(wflux, nx, 1, 1, "move_array_to(wflux_m3)");
+        const double* pm = checked_ptr(wmass_src, nx, 1, 1, "move_array_to(wmass_src_m3)");
+        const int nx_dst = cmp_nx_[dst];
+        const auto t = to_time(y, m, d, h, mi);
+        for (int ix = 0; ix < nx; ix++) {
+            if (pf[ix] <= 0.0) continue;
+            const int jx = pd[ix];
+            if (jx >= nx_dst)
+                throw std::out_of_range("move_array_to: recipient cell outside compartment");
+            const int rc = (jx < 0) ? -1 : dst;
+            couplercalls_->RunSpaceStep(
+                *hostcfg_, *json_, *wqconfig_, *units_, *utils_, *readjson_,
+                *vars_, *initiate_, *TD_, *TS_, *LE_, *CH_, *SI_,
+                *extwatflux_ss_, *compute_, *output_, t,
+                src, ix, 0, 0, rc, (jx < 0 ? 0 : jx), 0, 0, pf[ix], pm[ix]);
+        }
+    }
+
+    // Vectorised external inflow for a 1-D compartment: external water flux
+    // `ewf_name` brings wflux[ix] m3 into cell ix of `dst` (cells with wflux<=0
+    // skipped); the solute load is the EWF concentration of the generated inputs.
+    void inflow_array(const std::string& ewf_name, int dst,
+                      py::array_t<double, py::array::c_style | py::array::forcecast> wflux,
+                      int y, int m, int d, int h, int mi) {
+        require_init("inflow_array");
+        check_cmp(dst);
+        const int nx = cmp_nx_[dst];
+        const double* pf = checked_ptr(wflux, nx, 1, 1, "inflow_array(wflux_m3)");
+        const auto t = to_time(y, m, d, h, mi);
+        for (int ix = 0; ix < nx; ix++) {
+            if (pf[ix] <= 0.0) continue;
+            couplercalls_->RunSpaceStep_IN(
+                *hostcfg_, *json_, *wqconfig_, *units_, *utils_, *readjson_,
+                *vars_, *initiate_, *TD_, *CH_, *TS_,
+                *extwatflux_ss_, *compute_, *output_, t,
+                ewf_name, dst, ix, 0, 0, pf[ix]);
+        }
+    }
+
     // external water flux into the domain
     void inflow(const std::string& ewf_name, int dst, int ix_r, int iy_r, int iz_r,
                 double wflux_m3, int y, int m, int d, int h, int mi) {
@@ -350,6 +406,55 @@ public:
                 for (int z = 0; z < cmp_nz_[icmp]; z++)
                     r(x, y, z) = c(x, y, z);
         return out;
+    }
+
+    // ------------------------------------------------------------------
+    // State carry-over between runs (host-side restart): the solute state of
+    // OpenWQ between two time steps is the mass of every species in every
+    // cell (chemass) plus the "initial condition still pending" flag of cells
+    // that were dry when the IC was seeded. Restoring both right after the
+    // priming step of a new instance continues the previous run exactly.
+    // ------------------------------------------------------------------
+    void set_mass_array(int icmp, int ichem,
+                        py::array_t<double, py::array::c_style | py::array::forcecast> arr) {
+        require_init("set_mass_array");
+        check_cmp(icmp);
+        check_chem(ichem);
+        const double* p = checked_ptr(arr, cmp_nx_[icmp], cmp_ny_[icmp], cmp_nz_[icmp], "set_mass_array");
+        arma::Cube<double>& c = (*vars_->chemass)(icmp)(ichem);
+        for (int x = 0; x < cmp_nx_[icmp]; x++)
+            for (int y = 0; y < cmp_ny_[icmp]; y++)
+                for (int z = 0; z < cmp_nz_[icmp]; z++)
+                    c(x, y, z) = p[((size_t) x * cmp_ny_[icmp] + y) * cmp_nz_[icmp] + z];
+    }
+
+    py::array_t<int> pending_ic_array(int icmp, int ichem) {
+        require_init("pending_ic_array");
+        check_cmp(icmp);
+        check_chem(ichem);
+        const arma::Cube<int>& c = (*vars_->ic_conc_pending)(icmp)(ichem);
+        py::array_t<int> out({cmp_nx_[icmp], cmp_ny_[icmp], cmp_nz_[icmp]});
+        auto r = out.mutable_unchecked<3>();
+        for (int x = 0; x < cmp_nx_[icmp]; x++)
+            for (int y = 0; y < cmp_ny_[icmp]; y++)
+                for (int z = 0; z < cmp_nz_[icmp]; z++)
+                    r(x, y, z) = c(x, y, z);
+        return out;
+    }
+
+    void set_pending_ic_array(int icmp, int ichem,
+                              py::array_t<int, py::array::c_style | py::array::forcecast> arr) {
+        require_init("set_pending_ic_array");
+        check_cmp(icmp);
+        check_chem(ichem);
+        if (arr.size() != (py::ssize_t) cmp_nx_[icmp] * cmp_ny_[icmp] * cmp_nz_[icmp])
+            throw std::invalid_argument("set_pending_ic_array: wrong size");
+        const int* p = arr.data();
+        arma::Cube<int>& c = (*vars_->ic_conc_pending)(icmp)(ichem);
+        for (int x = 0; x < cmp_nx_[icmp]; x++)
+            for (int y = 0; y < cmp_ny_[icmp]; y++)
+                for (int z = 0; z < cmp_nz_[icmp]; z++)
+                    c(x, y, z) = p[((size_t) x * cmp_ny_[icmp] + y) * cmp_nz_[icmp] + z];
     }
 
     // sum of a species over every compartment (domain mass)

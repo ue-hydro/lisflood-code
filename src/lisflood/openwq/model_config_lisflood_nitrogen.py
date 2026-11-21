@@ -967,14 +967,15 @@ observation_compartments = ["RIVER_NETWORK_REACHES"]
 # ║  Everything above is openWQ's model_config_template.py, unchanged;     ║
 # ║  only the values below override its defaults. Regenerate the inputs:   ║
 # ║    python src/lisflood/openwq/model_config_lisflood_nitrogen.py        ║
-# ║  (OWQ_CASE_DIR / LISFLOOD_SETTINGS_XML env vars override the paths)    ║
+# ║  (env: OWQ_CASE_DIR, LISFLOOD_SETTINGS_XML, OWQ_NUM_THREADS, OWQ_LOCATION, ║
+# ║   OWQ_OUTPUT_DAYS, OWQ_OUTPUT_COMPARTMENTS)                              ║
 # ╚════════════════════════════════════════════════════════════════════════╝
 project_name = "LISFLOOD-OpenWQ: simple nitrogen cycle"
-geographical_location = "LISFLOOD compartments (test grid)"
+geographical_location = os.environ.get("OWQ_LOCATION", "LISFLOOD compartments (test grid)")
 authors = "Diogo Costa"
 date = "November, 2026"
 comment = ("Generated with openWQ model_config_template.py (hostmodel=lisflood), "
-           "BGC template individual_chemicals/nitrogen_simple.json")
+           "BGC template individual_chemicals/nitrogen_basic.json (no host dependencies)")
 
 hostmodel = "lisflood"
 mizuroute_config_path = None
@@ -987,16 +988,17 @@ file_manager_path = (os.environ.get("LISFLOOD_SETTINGS_XML")
 
 solver = "FORWARD_EULER"
 run_mode_debug = False
-use_num_threads = 1
+use_num_threads = int(os.environ.get("OWQ_NUM_THREADS", "1"))
 
 # uniform initial concentration for every species in every compartment
 ic_all_value = 1.0
 ic_all_units = "mg/l"
 
-# official openWQ simple N cycle: ORG_N -> NH4-N -> NO3-N -> N2_loss (T-dependent)
+# openWQ basic N cycle: ORG_N -> NH4-N -> NO3-N -> N2_loss, pure first-order
+# reaction network, NO host dependencies (focus on coupling mechanics)
 bgc_module_name = "NATIVE_BGC_FLEX"
 path2selected_NATIVE_BGC_FLEX_framework = (
-    "config_support_lib/BGC_templates/NATIVE_BGC_FLEX/individual_chemicals/nitrogen_simple.json")
+    "config_support_lib/BGC_templates/NATIVE_BGC_FLEX/individual_chemicals/nitrogen_basic.json")
 bgc_compartment_overrides = None
 
 td_module_name = "NATIVE_TD_ADV"   # advection along the LISFLOOD water fluxes
@@ -1026,9 +1028,11 @@ chemical_species = "all"
 units = "MG/L"
 no_water_conc_flag = -9999
 export_sediment = False
-timestep = [1, "day"]
+timestep = [int(os.environ.get("OWQ_OUTPUT_DAYS", "1")), "day"]
 compartments_and_cells = {c: {"1": ["all", "all", "all"]}
-                          for c in gJSON_lib.LISFLOOD_COMPARTMENTS}
+                          for c in (os.environ["OWQ_OUTPUT_COMPARTMENTS"].split(",")
+                                    if os.environ.get("OWQ_OUTPUT_COMPARTMENTS")
+                                    else gJSON_lib.LISFLOOD_COMPARTMENTS)}
 fluxes_conc_to_print = {}
 
 generate_report = False   # Gen_Report has no LISFLOOD support yet

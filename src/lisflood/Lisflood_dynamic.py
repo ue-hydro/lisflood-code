@@ -59,6 +59,11 @@ class LisfloodModel_dyn(DynamicModel):
             # flag for netcdf output for all, steps and end
             _ = CDFFlags(uuid.uuid4())  # init CDF flags
 
+        # OpenWQ coupling (inert unless option OpenWQ / OpenWQRecord): capture the
+        # start-of-step water stores before any hydrology of this step
+        if option.get('OpenWQ', False) or option.get('OpenWQRecord', False):
+            self.openwq_module.begin_step()
+
         self.TimeSinceStart = self.currentTimeStep() - self.firstTimeStep() + 1
         if flags['loud']:
             sys.stdout.write("%-6i %20s" % (self.currentTimeStep(), self.CalendarDate.strftime("%d/%m/%Y %H:%M")))
@@ -263,7 +268,7 @@ class LisfloodModel_dyn(DynamicModel):
         # Inert unless the 'OpenWQ' option is enabled in the settings file, so
         # default LISFLOOD runs are unchanged. Reads the end-of-step hydrology
         # state/fluxes and advances the OpenWQ solute balance.
-        if option.get('OpenWQ', False):
+        if option.get('OpenWQ', False) or option.get('OpenWQRecord', False):
             self.openwq_module.step()
 
         # ************************************************************

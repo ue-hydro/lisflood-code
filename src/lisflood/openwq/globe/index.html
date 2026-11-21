@@ -1,0 +1,2282 @@
+<meta charset="utf-8">
+<title>Global Nitrogen Globe</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: full-bleed globe as an instrument view; glass control panel top-left (bottom sheet on phones);
+   navigation cluster top-right; bottom dock = play button + time strip whose x axis IS the timeline.
+   Single deliberate dark look: perceptual colour maps read best against night. Every colour explicit. */
+:root {
+  --space-0: #04070b;
+  --space-1: #0c1520;
+  --panel: rgba(10, 16, 24, 0.86);
+  --fg: #e8edf2;
+  --muted: #94a2b0;
+  --faint: #5f6d7c;
+  --line: rgba(232, 237, 242, 0.13);
+  --accent: #f2a541;
+  --pin-a: #56b4e9;
+  --pin-b: #e3a2c7;
+  --pin-c: #3fc9a0;
+  --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-head: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: dark;
+}
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { background: radial-gradient(120% 90% at 60% 40%, var(--space-1), var(--space-0) 70%); background-color: var(--space-0);
+       color: var(--fg); font-family: var(--font-ui); font-size: 14px; overflow: hidden; }
+#stage { position: fixed; inset: 0; }
+#globe { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+#globe.dragging { cursor: grabbing; }
+#gridlab, #pins { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+#gridlab span { position: absolute; transform: translate(-50%, -50%); font-family: var(--font-data); font-size: 10.5px; color: rgba(232, 237, 242, 0.9);
+                text-shadow: 0 0 3px #000, 0 0 2px #000, 0 0 1px #000; white-space: nowrap; }
+.pin { position: absolute; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%; border: 2px solid var(--space-0);
+       display: grid; place-items: center; font: 600 11px/1 var(--font-data); color: var(--space-0); box-shadow: 0 0 0 1.5px rgba(232,237,242,0.9), 0 2px 8px rgba(0,0,0,0.6); }
+
+.panel {
+  position: fixed;
+  top: calc(16px + env(safe-area-inset-top, 0px));
+  left: max(16px, env(safe-area-inset-left, 0px));
+  width: min(364px, calc(100vw - 32px));
+  max-height: calc(100% - var(--dock, 190px) - 30px - env(safe-area-inset-top, 0px));
+  overflow: auto; overscroll-behavior: contain;
+  background: var(--panel);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px;
+  display: grid;
+  gap: 16px;
+  z-index: 2;
+  scrollbar-width: thin;
+}
+.eyebrow { font-family: var(--font-data); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
+h1 { margin: 4px 0 0; font-family: var(--font-head); font-size: 26px; line-height: 1.05; font-weight: 600; letter-spacing: -0.005em; text-wrap: balance; }
+.period { margin-top: 4px; font-family: var(--font-data); font-size: 12.5px; color: var(--fg); font-variant-numeric: tabular-nums; }
+.facts { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
+.facts b { color: var(--fg); font-weight: 500; font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+.label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 6px; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button, .btn {
+  font: inherit; font-size: 13px; color: var(--fg); background: transparent;
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; cursor: pointer;
+}
+.seg.small button, .btn.small { font-size: 12px; padding: 3px 8px; }
+.seg button:hover, .btn:hover { border-color: rgba(232, 237, 242, 0.32); }
+.seg button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: rgba(242, 165, 65, 0.09); }
+.seg button:disabled { opacity: 0.4; cursor: not-allowed; }
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+select { font: inherit; font-size: 12.5px; color: var(--fg); background: rgba(232,237,242,0.04); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+select option { background: #0c1520; color: var(--fg); }
+
+.legend-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.legend-title { font-size: 12.5px; font-weight: 500; }
+.tag { font-family: var(--font-data); font-size: 10.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
+.legend canvas { display: block; width: 100%; }
+.histwrap { position: relative; margin-top: 8px; }
+#hist { height: 44px; }
+.dual { position: relative; height: 16px; margin-top: -2px; }
+.dual input { position: absolute; left: 0; top: 0; width: 100%; height: 16px; margin: 0; background: none; pointer-events: none; -webkit-appearance: none; appearance: none; }
+.dual input::-webkit-slider-runnable-track { background: none; height: 16px; }
+.dual input::-moz-range-track { background: none; }
+.dual input::-webkit-slider-thumb { -webkit-appearance: none; pointer-events: auto; width: 12px; height: 16px; border-radius: 3px; background: var(--fg); border: 2px solid var(--space-0); cursor: ew-resize; }
+.dual input::-moz-range-thumb { pointer-events: auto; width: 8px; height: 12px; border-radius: 3px; background: var(--fg); border: 2px solid var(--space-0); cursor: ew-resize; }
+#bar { height: 12px; border-radius: 2px; margin-top: 8px; }
+.ticks { position: relative; height: 16px; margin-top: 3px; font-family: var(--font-data); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ticks span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.ticks span::before { content: ""; position: absolute; left: 50%; top: -4px; width: 1px; height: 3px; background: var(--muted); }
+.legend-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.legend-ctl .grow { flex: 1; }
+.anomrow { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.anomrow input { flex: 1; accent-color: var(--accent); }
+.anomrow output { font-family: var(--font-data); color: var(--fg); font-size: 11.5px; min-width: 88px; text-align: right; }
+.note { margin: 6px 0 0; font-size: 11.5px; line-height: 1.45; color: var(--muted); }
+.keys { margin-top: 8px; display: grid; gap: 5px; font-size: 11.5px; line-height: 1.4; color: var(--muted); }
+.keys div { display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: center; }
+.sw { width: 22px; height: 10px; border-radius: 2px; }
+.sw.hatch { background: repeating-linear-gradient(45deg, rgba(200,209,219,0.55) 0 1.2px, transparent 1.2px 5px), #2a323c; }
+.sw.dryline { height: 3px; background: #69707a; }
+.sw.width { height: 10px; background:
+  linear-gradient(var(--fg), var(--fg)) 0 50% / 5px 1px no-repeat,
+  linear-gradient(var(--fg), var(--fg)) 8px 50% / 5px 2.5px no-repeat,
+  linear-gradient(var(--fg), var(--fg)) 16px 50% / 6px 4.5px no-repeat; }
+.sw.iso { height: 10px; background: linear-gradient(90deg, #7a5dc7, #e8a33a); position: relative; }
+.sw.iso::after { content: ""; position: absolute; left: 10px; top: 0; bottom: 0; width: 1.5px; background: rgba(0,0,0,0.75); }
+.sw.flow { height: 4px; background: repeating-linear-gradient(90deg, #f2d36b 0 4px, #a65a2c 4px 10px); }
+
+.readout { font-family: var(--font-data); font-size: 12.5px; line-height: 1.5; color: var(--fg); font-variant-numeric: tabular-nums; min-height: 38px; }
+.readout .k { color: var(--muted); }
+.readout .v { font-size: 15px; font-weight: 500; }
+.pinlist { display: grid; gap: 6px; margin-top: 8px; }
+.pinrow { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: center; font-family: var(--font-data); font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pinrow .dot { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; color: var(--space-0); font-weight: 600; font-size: 10px; }
+.pinrow .pv { color: var(--fg); font-weight: 500; }
+.pinrow button { font: inherit; color: var(--muted); background: transparent; border: 0; cursor: pointer; padding: 2px 4px; font-size: 14px; line-height: 1; }
+.pinrow button:hover { color: var(--fg); }
+.view-grid { display: grid; gap: 10px; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+.row > span:first-child { min-width: 96px; }
+.checks { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; font-size: 12.5px; color: var(--muted); }
+.checks label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.checks label.off { opacity: 0.45; cursor: default; }
+.checks input { accent-color: var(--accent); }
+.row input[type=range] { flex: 1; min-width: 110px; accent-color: var(--accent); }
+.row output { font-family: var(--font-data); font-size: 11.5px; color: var(--fg); min-width: 38px; text-align: right; }
+.credit { font-size: 11px; line-height: 1.4; color: var(--faint); }
+details { border-top: 1px solid var(--line); padding-top: 10px; }
+summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+details p, details li { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+details p { margin: 8px 0 0; }
+details ul { margin: 6px 0 0; padding-left: 18px; }
+details li + li { margin-top: 3px; }
+
+.nav {
+  position: fixed; z-index: 2;
+  top: calc(16px + env(safe-area-inset-top, 0px));
+  right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; justify-items: end; gap: 8px;
+}
+.nav .btns { display: grid; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+             backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.nav button { font: inherit; font-size: 17px; line-height: 1; width: 38px; height: 38px; color: var(--fg); background: transparent; border: 0; cursor: pointer; display: grid; place-items: center; }
+.nav button + button { border-top: 1px solid var(--line); }
+.nav button:hover { color: var(--accent); }
+.nav button svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.6; }
+.viewinfo { font-family: var(--font-data); font-size: 11px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 7px;
+            white-space: nowrap; font-variant-numeric: tabular-nums; }
+.hint { font-size: 11px; color: var(--faint); text-align: right; max-width: 200px; line-height: 1.35; }
+.scalebar { display: grid; justify-items: end; gap: 2px; font-family: var(--font-data); font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.scalebar i { display: block; height: 5px; border: 1.5px solid var(--fg); border-top: 0; opacity: 0.85; }
+
+.help { position: fixed; z-index: 4; right: max(64px, calc(env(safe-area-inset-right, 0px) + 64px)); top: calc(16px + env(safe-area-inset-top, 0px));
+        width: min(300px, calc(100vw - 96px)); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+        backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); font-size: 12.5px; color: var(--muted); }
+.help h2 { margin: 0 0 8px; font: 600 14px/1.2 var(--font-head); color: var(--fg); }
+.help dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; margin: 0; }
+.help dt { font-family: var(--font-data); color: var(--fg); white-space: nowrap; }
+.help dd { margin: 0; }
+
+.dock {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 1;
+  padding: 26px max(16px, env(safe-area-inset-right, 0px)) calc(12px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  background: linear-gradient(to top, rgba(4, 7, 11, 0.96) 45%, rgba(4, 7, 11, 0));
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 16px; align-items: end;
+}
+#play { font: inherit; font-size: 15px; width: 44px; height: 44px; margin-bottom: 18px; border-radius: 50%; border: 1px solid var(--line);
+        background: var(--panel); color: var(--fg); cursor: pointer; display: grid; place-items: center; }
+#play:hover { border-color: var(--accent); }
+.track { position: relative; min-width: 0; }
+.chart-cap { font-size: 10.5px; color: var(--muted); letter-spacing: 0.02em; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#chart { display: block; width: 100%; height: 84px; overflow: visible; }
+#day { -webkit-appearance: none; appearance: none; width: 100%; height: 18px; margin: 2px 0 0; background: transparent; cursor: pointer; }
+#day::-webkit-slider-runnable-track { height: 2px; background: var(--line); }
+#day::-moz-range-track { height: 2px; background: var(--line); }
+#day::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -6px; border-radius: 50%; background: var(--accent); border: 2px solid var(--space-0); }
+#day::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); border: 2px solid var(--space-0); }
+.months { position: relative; height: 14px; font-family: var(--font-data); font-size: 10.5px; color: var(--muted); }
+.months span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.months span[data-on="true"] { color: var(--accent); }
+.when { margin-bottom: 14px; text-align: right; display: grid; gap: 6px; justify-items: end; }
+.date { font-family: var(--font-data); font-size: 16px; font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.interp { font-family: var(--font-data); font-size: 10.5px; color: var(--muted); white-space: nowrap; min-height: 14px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.speed { display: flex; gap: 4px; }
+.speed button { font-family: var(--font-data); font-size: 11px; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; cursor: pointer; }
+.speed button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.status { position: fixed; z-index: 3; left: 50%; transform: translateX(-50%); top: calc(16px + env(safe-area-inset-top, 0px)); max-width: min(440px, calc(100vw - 32px));
+          font-family: var(--font-data); font-size: 12px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+
+.caprow { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin-bottom: 2px; }
+.caprow .chart-cap { flex: 1; min-width: 0; margin: 0; }
+.mini { font: inherit; font-size: 10.5px; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; cursor: pointer; white-space: nowrap; }
+.mini:hover { color: var(--fg); }
+.mini[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.hovwrap { position: relative; height: 96px; margin: 2px 0 4px; }
+#hov { display: block; width: 100%; height: 100%; cursor: ew-resize; touch-action: none; border-radius: 3px; background: rgba(232, 237, 242, 0.03); }
+#chart { cursor: ew-resize; touch-action: none; }
+.hovlab { position: absolute; inset: 0; pointer-events: none; font-family: var(--font-data); font-size: 10px; color: rgba(232, 237, 242, 0.8); }
+.hovlab span { position: absolute; left: 3px; transform: translateY(-50%); text-shadow: 0 0 3px #000, 0 0 2px #000; }
+.hovcur { position: absolute; top: 0; bottom: 0; width: 1.5px; margin-left: -0.75px; background: var(--accent); pointer-events: none; }
+.hovlat { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed rgba(242, 165, 65, 0.85); pointer-events: none; }
+.hovread { position: absolute; top: 3px; right: 4px; font-family: var(--font-data); font-size: 10.5px; color: var(--fg); background: rgba(4, 7, 11, 0.78);
+           border-radius: 3px; padding: 1px 5px; pointer-events: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.card { position: fixed; z-index: 2; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+        backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.prof { right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(var(--dock, 190px) + 8px); width: min(470px, calc(100vw - 32px));
+        padding: 10px 12px 8px; display: grid; gap: 4px; }
+.cardhead { display: flex; align-items: center; gap: 8px; font-size: 12.5px; min-width: 0; }
+.cardhead .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cardhead .dot { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; color: var(--space-0); font: 600 10px/1 var(--font-data); flex: none; }
+.cardhead .x { font: inherit; color: var(--muted); background: transparent; border: 0; cursor: pointer; padding: 2px 4px; font-size: 15px; line-height: 1; }
+.cardhead .x:hover { color: var(--fg); }
+#profcv { display: block; width: 100%; height: 138px; cursor: crosshair; touch-action: none; }
+.cardfoot { font-family: var(--font-data); font-size: 11px; color: var(--muted); min-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.pmark { position: fixed; z-index: 1; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; border: 2px solid var(--fg);
+         box-shadow: 0 0 0 2px rgba(4, 7, 11, 0.85); pointer-events: none; }
+.tourcard { left: max(16px, env(safe-area-inset-left, 0px)); bottom: calc(var(--dock, 190px) + 8px); width: min(420px, calc(100vw - 32px)); padding: 12px 14px; display: grid; gap: 6px; }
+.tourcard .tc-top { display: flex; align-items: center; gap: 6px; }
+.tourcard .grow { flex: 1; }
+.tourcard h2 { margin: 0; font: 600 22px/1.1 var(--font-head); letter-spacing: -0.005em; text-wrap: balance; }
+.tc-facts { display: grid; gap: 3px; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.tc-facts b { color: var(--fg); font-weight: 500; font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+.tc-note { margin: 0; font-size: 11px; color: var(--faint); line-height: 1.4; }
+.tip { position: fixed; z-index: 5; pointer-events: none; display: flex; align-items: center; gap: 6px; font-family: var(--font-data); font-size: 12px; color: var(--fg);
+       background: rgba(4, 7, 11, 0.86); border: 1px solid var(--line); border-radius: 5px; padding: 3px 7px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tip i { width: 10px; height: 10px; border-radius: 2px; box-shadow: 0 0 0 1px rgba(232, 237, 242, 0.4); }
+.barwrap { position: relative; }
+.barmark { position: absolute; top: 3px; width: 0; height: 0; margin-left: -5px; border: 5px solid transparent; border-top-color: var(--fg); border-bottom: 0; pointer-events: none; }
+.nav button[aria-pressed="true"] { color: var(--accent); }
+body.present .panel { width: min(330px, calc(100vw - 32px)); gap: 10px; }
+body.present .panel > :not(header):not(.legend), body.present .facts, body.present .histwrap, body.present .legend-ctl,
+body.present .note, body.present .keys, body.present .anomrow, body.present .collapse, body.present .hint, body.present .viewinfo { display: none !important; }
+@media (max-width: 960px) {
+  .prof { bottom: auto; top: calc(16px + env(safe-area-inset-top, 0px)); right: max(64px, calc(env(safe-area-inset-right, 0px) + 64px)); width: min(420px, calc(100vw - 96px)); }
+  body.touring .prof { display: none; }
+}
+
+header { position: relative; }
+.collapse { display: none; position: absolute; top: -2px; right: 0; font: inherit; font-size: 11.5px; color: var(--muted); background: transparent;
+            border: 1px solid var(--line); border-radius: 5px; padding: 3px 8px; cursor: pointer; }
+@media (max-width: 720px) {
+  .panel { top: auto; bottom: calc(var(--dock, 190px) + 6px); max-height: 42%; width: calc(100vw - 32px); gap: 12px; padding: 12px; }
+  .tourcard { bottom: auto; top: calc(16px + env(safe-area-inset-top, 0px)); width: calc(100vw - 108px - env(safe-area-inset-right, 0px)); padding: 10px 12px; gap: 4px; }
+  .tourcard h2 { font-size: 18px; }
+  .tc-facts { font-size: 11.5px; line-height: 1.35; }
+  .tc-note { display: none; }
+  .tip { display: none; }
+  .hovwrap { height: 70px; }
+  .collapse { display: block; }
+  .panel.collapsed { gap: 8px; }
+  .panel.collapsed > :not(header):not(.legend), .panel.collapsed .period, .panel.collapsed .eyebrow,
+  .panel.collapsed .keys, .panel.collapsed .tag, .panel.collapsed .histwrap, .panel.collapsed .legend-ctl,
+  .panel.collapsed .note, .panel.collapsed .anomrow { display: none; }
+  .panel.collapsed h1 { font-size: 16px; margin: 0; padding-right: 110px; }
+  .panel.collapsed .legend-title { font-size: 11.5px; }
+  h1 { font-size: 21px; }
+  .facts, .hint, .viewinfo { display: none; }
+  .dock { grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; }
+  .when { grid-column: 1 / -1; grid-row: 1; justify-items: start; text-align: left; margin-bottom: 0; grid-template-columns: auto auto; align-items: baseline; }
+  #play { margin-bottom: 14px; }
+  #chart { height: 60px; }
+  .speed { display: none; }
+  .date { font-size: 13px; }
+  .help { right: 64px; }
+}
+</style>
+
+<div id="stage"><canvas id="globe" aria-label="Globe showing the selected nitrogen layer"></canvas></div>
+<div id="gridlab" aria-hidden="true"></div>
+<div id="pins" aria-hidden="true"></div>
+
+<aside class="panel" id="panel" aria-label="Map controls">
+  <header>
+    <button type="button" class="collapse" id="collapse" aria-expanded="true" aria-controls="panel">Hide controls</button>
+    <div class="eyebrow">GloFAS v5 LISFLOOD × openWQ</div>
+    <h1 id="headline">Nitrogen</h1>
+    <div class="period" id="period">–</div>
+    <div class="facts" id="facts"></div>
+  </header>
+  <div>
+    <div class="label">Compartment</div>
+    <div class="seg" id="comp" role="group" aria-label="Compartment"></div>
+  </div>
+  <div>
+    <div class="label">Species</div>
+    <div class="seg" id="spec" role="group" aria-label="Species"></div>
+  </div>
+  <div>
+    <div class="label">Show</div>
+    <div class="seg small" id="mode" role="group" aria-label="Quantity shown"></div>
+  </div>
+  <section class="legend" aria-label="Colour scale">
+    <div class="legend-head"><span class="legend-title" id="legend-title">Concentration</span><span class="tag" id="scale-tag">log scale</span></div>
+    <div class="histwrap" id="histwrap">
+      <canvas id="hist" aria-label="Histogram of the values on the date shown, over the whole coded range"></canvas>
+      <div class="dual">
+        <input type="range" id="rlo" aria-label="Lower end of the colour range">
+        <input type="range" id="rhi" aria-label="Upper end of the colour range">
+      </div>
+    </div>
+    <div class="anomrow" id="anomrow" hidden>
+      <span>Range</span><input type="range" id="anom" min="0" max="7" step="1" value="4" aria-label="Range of the departure colour scale"><output id="anom-out">–</output>
+    </div>
+    <div class="barwrap"><canvas id="bar" aria-hidden="true"></canvas><i class="barmark" id="barmark" hidden></i></div>
+    <div class="ticks" id="ticks"></div>
+    <div class="legend-ctl">
+      <label for="cmap">Colours</label><select id="cmap" aria-label="Colour map"></select>
+      <div class="seg small" id="scale" role="group" aria-label="Colour scale type"></div>
+      <span class="grow"></span>
+      <button type="button" class="btn small" id="reset">Reset range</button>
+    </div>
+    <p class="note" id="range-note"></p>
+    <div class="keys" id="keys"></div>
+  </section>
+  <div>
+    <div class="label">Pointer</div>
+    <div class="readout" id="readout"><span class="k">Hover over the globe to read a value.</span></div>
+  </div>
+  <div>
+    <div class="label">Probes</div>
+    <div class="note" id="pin-hint" style="margin:0">Click a river to select it: its upstream network lights up and a card shows its main stem, the basin over time and values against upstream area. Click elsewhere to pin a point. Up to three probes; their values on every output date appear in the time strip.</div>
+    <div class="pinlist" id="pinlist"></div>
+  </div>
+  <section class="view-grid" aria-label="Display">
+    <div>
+      <div class="label">Base map</div>
+      <div class="seg small" id="base" role="group" aria-label="Base map"></div>
+    </div>
+    <div class="row"><span>Layer opacity</span><input type="range" id="opacity" min="0" max="100" value="100" step="5" aria-label="Layer opacity"><output id="opacity-out">100 %</output></div>
+    <div class="row"><span>Terrain shading</span><input type="range" id="shade" min="0" max="100" value="25" step="5" aria-label="Terrain shading on the data layer"><output id="shade-out">25 %</output></div>
+    <div class="row" id="terrain-row" hidden><span>Terrain height</span><input type="range" id="terrain" min="0" max="50" value="20" step="5" aria-label="Vertical exaggeration of the terrain"><output id="terrain-out">×20</output></div>
+    <div class="checks">
+      <label id="lab-rivers"><input type="checkbox" id="rivers" checked> River network</label>
+      <label><input type="checkbox" id="flow" checked> Flow direction</label>
+      <label><input type="checkbox" id="iso"> Isolines</label>
+      <label><input type="checkbox" id="grat" checked> Graticule</label>
+      <label><input type="checkbox" id="coast" checked> Land-mask outline</label>
+      <label><input type="checkbox" id="smooth" checked> Smooth pixels</label>
+      <label><input type="checkbox" id="smootht" checked> Smooth time</label>
+      <label><input type="checkbox" id="spin"> Auto-rotate</label>
+    </div>
+    <div class="credit" id="credit"></div>
+  </section>
+  <details>
+    <summary>About this run and how it is drawn</summary>
+    <p>A coupling test, not a nitrogen assessment. Hydrology: OS-LISFLOOD v5.0.0 with the official GloFAS v5 settings and ERA5-based forcing (JRC open data), cold-started at the first date shown. Water quality: openWQ with its basic nitrogen template (ORG_N → NH4-N → NO3-N → N2 lost, constant first-order rates), set up with openWQ's configuration generator.</p>
+    <p>Every compartment starts at 1 mg-N/L of each species. Water infiltrating the topsoil carries a fixed test load of 10 mg/L NO3-N. Solute moves with LISFLOOD's own water fluxes: soil layers, groundwater zones and cell-to-cell river routing. Lakes and reservoirs pass solute straight through. N2_LOSS is the cumulative nitrogen removed by denitrification in each compartment.</p>
+    <p>How the maps are drawn:</p>
+    <ul>
+      <li>The page receives values, not colours. Each layer is coded in 254 log₁₀ steps between its 0.5th and 99.9th percentile over all dates (step size in the legend); values beyond take the end codes and read as ≤ or ≥. Your graphics card applies the colour scale, range and view you choose.</li>
+      <li>Topsoil and groundwater: mean of the wet model cells under each map pixel (size in the legend). <em>Smooth pixels</em> interpolates between neighbouring pixels that have values; switch it off to see the pixels as computed.</li>
+      <li>Rivers: every LISFLOOD channel cell with at least the stated upstream area, drawn from its centre to the centre of its downstream cell along the model's own routing, coloured by that cell's value. Line width grows with upstream area; smaller rivers appear as you zoom in.</li>
+      <li>Time: the model wrote a map every week at 00:00 UTC. <em>Smooth time</em> interpolates log₁₀ values linearly between two outputs, and the date panel says so; switch it off to step from output to output. Probes and statistics use the outputs only.</li>
+      <li>Departure: log₁₀ of the value divided by the geometric mean of all dates at the same place (×2 means twice the mean).</li>
+      <li>Flow direction: dashes travel from each cell to its downstream cell. Their speed is constant on screen and says nothing about flow velocity.</li>
+      <li>Selecting a river: a click near a drawn river snaps to its nearest channel cell. Every mapped cell draining to it lights up in the probe's colour, as do its main stem and its path to the outlet; the rest of the network steps back. The main stem follows the branch with the larger upstream area at every confluence, from where the river first drains the network threshold down to the outlet.</li>
+      <li>River card: <em>Main stem</em>, values along that path on the date shown, with the range over all outputs at each cell and the upstream area (grey, right axis), which steps up at every confluence. <em>Over time</em>, the selected cell on every output against the median and 10–90 % range of all mapped river cells upstream of it. <em>vs upstream area</em>, every mapped river cell upstream on the date shown against its own upstream area. In the topsoil and groundwater views the card reads the map pixel under each river cell.</li>
+      <li>Latitude × time: for every output date, the mean of the coded log₁₀ values (the geometric mean) over the pixels or river cells with a value in each 1° latitude band; departure view: against each band's own mean over all dates. Drag on it or on the time strip to move in time.</li>
+      <li>Terrain height: LISFLOOD's elevation map averaged to the nodes of a 0.25° mesh (0.5° on phones) and raised by the factor shown; 0 m outside the model domain. Picking, probes and rivers follow the raised surface. Set it to flat to see the sphere.</li>
+      <li>Tour: flies to the cell with the largest upstream area near each river's mouth (a fixed box per river; the names are the only text not taken from the files) and selects it. Every number in the caption comes from LISFLOOD's network and this run's outputs.</li>
+      <li>Histogram and time strip: weighted by pixel area over wet cells (rivers: network cells, equal weights). Line: median; band: 10th–90th percentile.</li>
+      <li>No value (hatched land, grey river): the cell holds less than the stated water depth, or the value overflowed the 16-bit output (a few nearly dry river cells per date).</li>
+      <li>Relief: hillshade of LISFLOOD's elevation map (×6 vertical exaggeration, contrast-stretched), drawn inside the model domain; the outline marks the edge of the model's land mask. Satellite, when offered: NASA Blue Marble Next Generation monthly composites of 2004, blended for the date shown; context only, not data of the simulated year. South of the model grid (dashed line) there is no model.</li>
+    </ul>
+  </details>
+</aside>
+
+<nav class="nav" aria-label="Globe navigation">
+  <div class="btns">
+    <button type="button" id="zin" aria-label="Zoom in" title="Zoom in (+)">+</button>
+    <button type="button" id="zout" aria-label="Zoom out" title="Zoom out (−)">−</button>
+    <button type="button" id="home" aria-label="Reset view" title="Reset view (0)"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 1v3M8 12v3M1 8h3M12 8h3"/></svg></button>
+    <button type="button" id="tiltbtn" aria-label="Tilt the view (close-ups)" title="Tilt the view for close-ups (V)" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 12.5l4-6h9l-4 6z"/><path d="M8 6.5V2M6 4l2-2 2 2"/></svg></button>
+    <button type="button" id="tourbtn" aria-label="Guided tour of major rivers" title="Guided tour of major rivers (T)" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 13c2.5-1 3-4 5.5-5S12 6 14 3"/><circle cx="2.5" cy="12.8" r="1.3"/><circle cx="13.6" cy="3.2" r="1.3"/></svg></button>
+    <button type="button" id="presbtn" aria-label="Presentation mode" title="Presentation mode (P)" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="9" rx="1"/><path d="M8 11.5V14M5 14h6"/></svg></button>
+    <button type="button" id="fsbtn" aria-label="Full screen" title="Full screen"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg></button>
+    <button type="button" id="helpbtn" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" aria-expanded="false" aria-controls="help">?</button>
+  </div>
+  <div class="viewinfo" id="viewinfo">–</div>
+  <div class="scalebar" id="scalebar" title="Scale at the centre of the view"><i id="scalebar-bar"></i><span id="scalebar-txt">–</span></div>
+  <div class="hint">Drag to turn · scroll or pinch to zoom toward the pointer · double-click to fly there · click a river to select it</div>
+</nav>
+<div class="help" id="help" hidden role="dialog" aria-label="Keyboard shortcuts">
+  <h2>Keyboard</h2>
+  <dl>
+    <dt>Space</dt><dd>Play or pause</dd>
+    <dt>← →</dt><dd>Previous or next output</dd>
+    <dt>+ − 0</dt><dd>Zoom in, zoom out, reset view</dd>
+    <dt>D</dt><dd>Concentration or departure</dd>
+    <dt>I · G · F</dt><dd>Isolines, graticule, flow direction</dd>
+    <dt>R</dt><dd>River network</dd>
+    <dt>V</dt><dd>Tilt the view (close-ups)</dd>
+    <dt>T</dt><dd>Guided tour of major rivers</dd>
+    <dt>P</dt><dd>Presentation mode</dd>
+    <dt>Esc</dt><dd>End the tour, then remove the probes</dd>
+  </dl>
+</div>
+
+<div class="status" id="status">Loading…</div>
+<div class="tip" id="tip" hidden></div>
+<div class="pmark" id="pmark" hidden></div>
+
+<section class="card prof" id="prof" hidden aria-label="Selected river">
+  <div class="cardhead"><span class="dot" id="prof-dot">A</span><span class="t" id="prof-title">River</span><button type="button" class="mini" id="prof-fit" title="Fit this river's network in the view">Fit basin</button><button type="button" class="x" id="prof-x" aria-label="Close the river card">×</button></div>
+  <div class="seg small" id="prof-tabs" role="group" aria-label="River graph"></div>
+  <canvas id="profcv" aria-label="Graph of the selected river"></canvas>
+  <div class="cardfoot" id="prof-foot"></div>
+</section>
+
+<section class="card tourcard" id="tourcard" hidden aria-label="Guided tour" aria-live="polite">
+  <div class="tc-top">
+    <span class="eyebrow" id="tc-step">Tour</span><span class="grow"></span>
+    <button type="button" class="mini" id="tc-prev" aria-label="Previous river">◀</button>
+    <button type="button" class="mini" id="tc-pause">Pause</button>
+    <button type="button" class="mini" id="tc-next" aria-label="Next river">▶</button>
+    <button type="button" class="mini" id="tc-end">End</button>
+  </div>
+  <h2 id="tc-name">–</h2>
+  <div class="tc-facts" id="tc-facts"></div>
+  <p class="tc-note">Numbers come from this run's files: LISFLOOD's network and the openWQ outputs of a coupling test (see About).</p>
+</section>
+
+<div class="dock">
+  <button id="play" aria-label="Play">▶</button>
+  <div class="track">
+    <div class="hovwrap" id="hovwrap" hidden>
+      <canvas id="hov" aria-label="Latitude by time: mean of the layer in each 1 degree latitude band on every output date"></canvas>
+      <div class="hovlab" id="hovlab"></div>
+      <div class="hovlat" id="hovlat" hidden></div>
+      <div class="hovcur" id="hovcur"></div>
+      <div class="hovread" id="hovread" hidden></div>
+    </div>
+    <div class="caprow"><div class="chart-cap" id="chart-cap">Median and 10–90 % range</div><button type="button" class="mini" id="hovbtn" aria-pressed="false" hidden title="Show the layer by latitude band and date">Latitude × time</button></div>
+    <svg id="chart" role="img" aria-label="Median, 10 to 90 percent range and probe values over time"></svg>
+    <input type="range" id="day" min="0" max="0" value="0" step="0.01" aria-label="Date">
+    <div class="months" id="months"></div>
+  </div>
+  <div class="when">
+    <div class="date" id="date">–</div>
+    <div class="interp" id="interp"></div>
+    <div class="speed" id="speed" role="group" aria-label="Playback speed"></div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const css = getComputedStyle(document.documentElement);
+const tok = n => css.getPropertyValue(n).trim();
+const $ = id => document.getElementById(id);
+const statusEl = $('status');
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const EARTH_KM = 6371;
+const PIN_COLORS = [tok('--pin-a'), tok('--pin-b'), tok('--pin-c')];
+const PIN_LETTERS = ['A', 'B', 'C'];
+const MS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const ANOM_STEPS = [0.05, 0.1, 0.2, 0.3, 0.5, 1, 2, 3];
+
+// ---------- formatting ----------
+const isoMs = s => { const [y, m, d] = s.split('-').map(Number); return Date.UTC(y, m - 1, d); };
+const fmtDate = ms => { const d = new Date(ms); return `${d.getUTCDate()} ${MS[d.getUTCMonth()]} ${d.getUTCFullYear()}`; };
+function fmtSig(v, sig = 2) {
+  if (!isFinite(v)) return '–';
+  const a = Math.abs(v);
+  if (a === 0) return '0';
+  if (a >= 1e4 || a < 1e-3) return v.toExponential(sig - 1).replace('e+', 'e');
+  const s = +v.toPrecision(sig);
+  return a >= 100 ? String(Math.round(s)) : String(s);
+}
+function fmtTick(v) { const a = Math.abs(v); return a >= 1e4 || (a < 0.01 && a > 0) ? v.toExponential(0).replace('e+', 'e') : String(+v.toPrecision(2)); }
+function fmtLat(v) { const r = Math.round(v * 100) / 100; return r === 0 ? '0°' : `${+Math.abs(r).toFixed(2)}°${r > 0 ? 'N' : 'S'}`; }
+function fmtLon(v) { let r = Math.round(v * 100) / 100; if (r <= -180) r += 360; if (r > 180) r -= 360; return r === 0 || Math.abs(r) === 180 ? `${Math.abs(r)}°` : `${+Math.abs(r).toFixed(2)}°${r > 0 ? 'E' : 'W'}`; }
+function fmtBox(b) {
+  const ew = (a, z) => a < 0 && z <= 0 ? `${+(-z).toFixed(1)}–${+(-a).toFixed(1)}°W` : a >= 0 ? `${+a.toFixed(1)}–${+z.toFixed(1)}°E` : `${+(-a).toFixed(1)}°W–${+z.toFixed(1)}°E`;
+  const ns = (a, z) => a < 0 && z <= 0 ? `${+(-z).toFixed(1)}–${+(-a).toFixed(1)}°S` : a >= 0 ? `${+a.toFixed(1)}–${+z.toFixed(1)}°N` : `${+(-a).toFixed(1)}°S–${+z.toFixed(1)}°N`;
+  return `${ew(b[0], b[1])}, ${ns(b[2], b[3])}`;
+}
+const fmtKm2 = v => v >= 1e6 ? `${(v / 1e6).toPrecision(3)} million km²` : `${Math.round(v / (v >= 1e5 ? 1000 : 100)) * (v >= 1e5 ? 1000 : 100)} km²`.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+function ratioLabel(d) { const r = Math.pow(10, d); return r >= 1 ? `×${fmtSig(r, 2)}` : `÷${fmtSig(1 / r, 2)}`; }
+
+// ---------- scene ----------
+const canvas = $('globe');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+renderer.setPixelRatio(DPR);
+renderer.setClearColor(0x000000, 0);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(34, 1, 0.005, 100);
+const FOV2 = THREE.MathUtils.degToRad(camera.fov / 2);
+const MIN_ALT = 0.02, MAX_ALT = 7;              // camera altitude in Earth radii (~130 km .. 45,000 km)
+
+// lon 0 at +X, lon 90E at -Z (three.js SphereGeometry UVs: u = (lon + 180) / 360, v = (lat + 90) / 180)
+function dirFromLatLon(lat, lon) {
+  const p = THREE.MathUtils.degToRad(lat), l = THREE.MathUtils.degToRad(lon);
+  return new THREE.Vector3(Math.cos(p) * Math.cos(l), Math.sin(p), -Math.cos(p) * Math.sin(l));
+}
+function latLonOf(v) { const n = v.clone().normalize(); return [THREE.MathUtils.radToDeg(Math.asin(n.y)), THREE.MathUtils.radToDeg(Math.atan2(-n.z, n.x))]; }
+camera.position.copy(dirFromLatLon(18, 14).multiplyScalar(6));
+// the controls drive `camera` (always looking at the Earth's centre); the view is drawn and picked from
+// `viewCam`, which can tilt about the surface point at the centre of the screen for close-up 3D views
+const viewCam = camera.clone();
+let tiltTarget = 0, tiltNow = 0;
+const _tax = new THREE.Vector3(), _tq = new THREE.Quaternion(), _tS = new THREE.Vector3(), _tv = new THREE.Vector3();
+function updateViewCam() {
+  viewCam.fov = camera.fov; viewCam.aspect = camera.aspect; viewCam.near = camera.near; viewCam.far = camera.far;
+  viewCam.position.copy(camera.position); viewCam.quaternion.copy(camera.quaternion);
+  const a = camera.position.length() - 1, t = tiltNow * Math.max(0, Math.min(1, (0.9 - a) / 0.6));
+  if (t > 1e-4) {
+    const [la, lo] = latLonOf(camera.position);
+    _tS.copy(camera.position).normalize().multiplyScalar(surfR(la, lo));
+    _tax.set(1, 0, 0).applyQuaternion(camera.quaternion);
+    _tq.setFromAxisAngle(_tax, t);
+    _tv.copy(camera.position).sub(_tS).applyQuaternion(_tq);
+    viewCam.position.copy(_tS).add(_tv);
+    viewCam.quaternion.premultiply(_tq);
+    viewCam.near = Math.max(0.0005, camera.near * 0.5);
+  }
+  viewCam.updateProjectionMatrix(); viewCam.updateMatrixWorld();
+}
+
+// ---------- navigation: zoom toward the pointer, drag that follows the surface ----------
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+const pickSphere = new THREE.Sphere(new THREE.Vector3(), 1);
+function pickSurface(cx, cy) {
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ndc, viewCam);
+  const p = new THREE.Vector3();
+  pickSphere.radius = 1;
+  if (!ray.ray.intersectSphere(pickSphere, p)) return null;
+  if (exagR()) {                       // raised terrain: refine on the surface height under the hit
+    const q = new THREE.Vector3();
+    for (let it = 0; it < 4; it++) {
+      const [la, lo] = latLonOf(p);
+      pickSphere.radius = surfR(la, lo);
+      if (!ray.ray.intersectSphere(pickSphere, q)) break;
+      p.copy(q);
+    }
+    pickSphere.radius = 1;
+  }
+  return p;
+}
+let zoomTarget = null, dirTarget = null;
+const alt = () => camera.position.length() - 1;
+function stopSpin() { if (controls.autoRotate) { controls.autoRotate = false; $('spin').checked = false; } }
+function zoomBy(f, cx, cy) {
+  const d0 = zoomTarget ?? camera.position.length();
+  const a1 = Math.min(MAX_ALT, Math.max(minAlt(), (d0 - 1) * f));
+  zoomTarget = 1 + a1;
+  if (f < 1 && cx !== undefined) {
+    const hit = pickSurface(cx, cy);
+    if (hit) {
+      const cur = (dirTarget || camera.position.clone().normalize()).clone();
+      const s = Math.min(1, (1 - a1 / (d0 - 1)) * 1.05);
+      dirTarget = cur.lerp(hit.normalize(), s).normalize();
+    }
+  }
+  stopSpin();
+}
+canvas.addEventListener('wheel', e => {      // registered before OrbitControls so its own wheel zoom never runs
+  e.preventDefault(); e.stopImmediatePropagation(); endFlight(); userTook();
+  const dy =e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+  zoomBy(Math.exp(Math.max(-0.6, Math.min(0.6, dy * 0.0018))), e.clientX, e.clientY);
+}, { passive: false });
+let clickTimer = null;
+canvas.addEventListener('dblclick', e => {
+  clearTimeout(clickTimer);
+  const hit = pickSurface(e.clientX, e.clientY); if (!hit) return;
+  dirTarget = hit.normalize(); zoomTarget = 1 + Math.max(minAlt(), ((zoomTarget ?? camera.position.length()) - 1) * 0.42); stopSpin(); endFlight();
+});
+
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.dampingFactor = 0.09;
+controls.enablePan = false; controls.minDistance = 1 + MIN_ALT; controls.maxDistance = 1 + MAX_ALT;
+controls.zoomSpeed = 0.9; controls.autoRotateSpeed = 0.35;
+let downAt = null;
+canvas.addEventListener('pointerdown', e => { dirTarget = null; stopSpin(); endFlight(); userTook(); downAt = { x: e.clientX, y: e.clientY, t: performance.now() }; canvas.classList.add('dragging'); $('tip').hidden = true; });
+canvas.addEventListener('pointerup', e => {
+  canvas.classList.remove('dragging');
+  if (!downAt) return;
+  const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y), dt = performance.now() - downAt.t;
+  downAt = null;
+  if (moved < 5 && dt < 450 && e.button === 0) {
+    const x = e.clientX, y = e.clientY;
+    clearTimeout(clickTimer); clickTimer = setTimeout(() => addPinAt(x, y), 260);
+  }
+});
+function surfaceSpan(d) { return Math.asin(Math.min(1, d * Math.sin(FOV2))) - FOV2; }   // rad, half height
+function kmPerPx() { return 2 * alt() * Math.tan(FOV2) * EARTH_KM / Math.max(1, canvas.clientHeight); }
+function navStep() {
+  const p = camera.position;
+  if (dirTarget) {
+    const cur = p.clone().normalize(), nd = cur.clone().lerp(dirTarget, 0.16).normalize();
+    p.copy(nd.multiplyScalar(p.length()));
+    if (nd.angleTo(dirTarget) < 2e-4) dirTarget = null;
+  }
+  if (zoomTarget !== null) {
+    const d = p.length(), nd = d + (zoomTarget - d) * 0.16;
+    p.setLength(nd);
+    if (Math.abs(zoomTarget - nd) < 2e-5) zoomTarget = null;
+  }
+  controls.rotateSpeed = Math.max(0.002, 1.1 * surfaceSpan(p.length()) / Math.PI);
+}
+
+// cinematic flights (tour): slerp the direction, ease the altitude in log space and lift it mid-way
+let flight = null;
+const qI = new THREE.Quaternion(), qT = new THREE.Quaternion(), qS = new THREE.Quaternion();
+function flyTo(dir, dist, dur = 3.4) {
+  const d0 = camera.position.length(), dir0 = camera.position.clone().normalize(), dir1 = dir.clone().normalize();
+  const ang = dir0.angleTo(dir1);
+  flight = { dir0, dir1, a0: Math.log(d0 - 1), a1: Math.log(Math.max(minAlt(), dist - 1)), bump: Math.min(1.4, ang * 0.85),
+             t0: performance.now(), dur: reduceMotion ? 1 : dur * 1000 * (0.55 + 0.45 * Math.min(1, ang / 1.2)) };
+  qT.setFromUnitVectors(dir0, dir1);
+  zoomTarget = null; dirTarget = null; stopSpin();
+}
+function endFlight() { flight = null; }
+function flightStep(now) {
+  if (!flight) return;
+  const s = Math.min(1, (now - flight.t0) / flight.dur), e = s < 0.5 ? 4 * s * s * s : 1 - Math.pow(-2 * s + 2, 3) / 2;
+  qS.slerpQuaternions(qI, qT, e);
+  const la = flight.a0 + (flight.a1 - flight.a0) * e + flight.bump * Math.sin(Math.PI * e);
+  camera.position.copy(flight.dir0).applyQuaternion(qS).multiplyScalar(1 + Math.exp(la));
+  if (s >= 1) flight = null;
+}
+
+// ---------- textures and colour maps ----------
+const maxAniso = renderer.capabilities.getMaxAnisotropy();
+function blankTex() { const t = new THREE.DataTexture(new Uint8Array(4), 1, 1); t.needsUpdate = true; return t; }
+const BLANK = blankTex();
+function lutTexture(stops) {
+  const n = 256, d = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const x = i / (n - 1) * (stops.length - 1), k = Math.min(Math.floor(x), stops.length - 2), f = x - k;
+    for (let c = 0; c < 3; c++) d[i * 4 + c] = Math.round((stops[k][c] * (1 - f) + stops[k + 1][c] * f) * 255);
+    d[i * 4 + 3] = 255;
+  }
+  const t = new THREE.DataTexture(d, n, 1);
+  t.magFilter = t.minFilter = THREE.LinearFilter; t.colorSpace = THREE.NoColorSpace; t.needsUpdate = true;
+  t.userData.rgb = d;
+  return t;
+}
+function loadImageTexture(url, mip = true) {
+  return new Promise((res, rej) => new THREE.TextureLoader().load(url, t => {
+    t.colorSpace = THREE.NoColorSpace; t.anisotropy = maxAniso;
+    t.minFilter = mip ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter; t.generateMipmaps = mip; res(t);
+  }, undefined, () => rej(new Error(url))));
+}
+// lossless code images: decode without colour management, keep the bytes on the CPU too
+async function loadCodes(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`${url}: HTTP ${resp.status}`);
+  const blob = await resp.blob();
+  let src;
+  try { src = await createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' }); }
+  catch (e) {
+    src = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error(url)); im.src = URL.createObjectURL(blob); });
+  }
+  const w = src.width, h = src.height;
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(src, 0, 0);
+  const arr = new Uint8Array(ctx.getImageData(0, 0, w, h).data.buffer);
+  if (src.close) src.close();
+  return { arr, w, h };
+}
+function codeTexture(arr, w, h) {
+  const t = new THREE.DataTexture(arr, w, h, THREE.RGBAFormat);
+  t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.colorSpace = THREE.NoColorSpace; t.flipY = false; t.needsUpdate = true;
+  return t;
+}
+const fileCache = new Map();        // url -> { promise, tex, arr, w, h, last }
+function getFile(url) {
+  let e = fileCache.get(url);
+  if (!e) {
+    e = { url, tex: null, arr: null, failed: false };
+    e.promise = loadCodes(url).then(r => { e.arr = r.arr; e.w = r.w; e.h = r.h; e.tex = codeTexture(r.arr, r.w, r.h); return e; })
+      .catch(err => { e.failed = true; statusEl.hidden = false; statusEl.textContent = `Could not load ${url}`; throw err; });
+    e.promise.catch(() => {});
+    fileCache.set(url, e);
+  }
+  e.last = performance.now();
+  return e;
+}
+function evict(keep) {
+  const MAX = 8;
+  if (fileCache.size <= MAX) return;
+  const list = [...fileCache.values()].filter(e => !keep.has(e.url) && (e.tex || e.failed)).sort((a, b) => a.last - b.last);
+  while (fileCache.size > MAX && list.length) { const e = list.shift(); if (e.tex) e.tex.dispose(); fileCache.delete(e.url); }
+}
+const CH = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
+
+// ---------- the globe: one shader composites base map, data layer, outline and graticule ----------
+const GLSL_COMMON = /* glsl */`
+precision highp float; precision highp int; precision highp sampler2D;
+uniform vec2 uEnc; uniform vec2 uRange; uniform int uLinear;
+float dec(float c) { return uEnc.x + (c - 1.0) / 253.0 * (uEnc.y - uEnc.x); }
+bool okc(float c) { return c > 0.5 && c < 254.5; }
+float colT(float v) {
+  if (uLinear == 1) { float a = pow(10.0, uRange.x), b = pow(10.0, uRange.y); return (pow(10.0, v) - a) / (b - a); }
+  return (v - uRange.x) / (uRange.y - uRange.x);
+}
+vec2 lutUv(float t) { return vec2(clamp(t, 0.0, 1.0) * (255.0 / 256.0) + 0.5 / 256.0, 0.5); }
+`;
+const globeU = {
+  uRelief: { value: BLANK }, uDomain: { value: BLANK }, uSatA: { value: BLANK }, uSatB: { value: BLANK },
+  uTexA: { value: BLANK }, uTexB: { value: BLANK }, uRef: { value: BLANK }, uLut: { value: BLANK }, uLutDiv: { value: BLANK },
+  uChA: { value: CH[0] }, uChB: { value: CH[0] }, uSize: { value: new THREE.Vector2(1, 1) },
+  uEnc: { value: new THREE.Vector2(0, 1) }, uRange: { value: new THREE.Vector2(0, 1) }, uLinear: { value: 0 },
+  uBase: { value: 0 }, uHasData: { value: 0 }, uMode: { value: 0 }, uSmooth: { value: 1 }, uHasRelief: { value: 0 },
+  uMix: { value: 0 }, uSatMix: { value: 0 }, uOpacity: { value: 1 }, uShade: { value: 0.25 }, uAnom: { value: 0.5 },
+  uDpr: { value: DPR }, uIso: { value: new THREE.Vector2(0, 1) }, uCoast: { value: 0.5 }, uSouth: { value: -90 }, uFade: { value: 0 },
+  uGrat: { value: new THREE.Vector4(1, 10, 0.2, 2) },
+  uOcean: { value: new THREE.Color('#14304a') }, uOcean2: { value: new THREE.Color('#081624') },
+  uLand0: { value: new THREE.Color('#171c23') }, uLand1: { value: new THREE.Color('#7e8894') },
+  uTer: { value: BLANK }, uExag: { value: 0 }, uSeg: { value: new THREE.Vector2(384, 192) }, uStride: { value: 1 },
+};
+const globeMat = new THREE.ShaderMaterial({
+  uniforms: globeU,
+  // terrain: every mesh vertex sits on a node of the terrain map and is raised by its height x exaggeration
+  vertexShader: /* glsl */`
+    uniform sampler2D uTer; uniform float uExag, uStride; uniform vec2 uSeg;
+    varying vec2 vUv; varying vec3 vN;
+    void main() {
+      vUv = uv; vN = normalize(normalMatrix * normal);
+      vec3 p = position;
+      if (uExag > 0.0) {
+        int j = int(floor(uv.x * uSeg.x + 0.5) * uStride + 0.5), i = int(floor((1.0 - uv.y) * uSeg.y + 0.5) * uStride + 0.5);
+        p *= 1.0 + texelFetch(uTer, ivec2(j, i), 0).r * uExag;
+      }
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    }`,
+  fragmentShader: GLSL_COMMON + /* glsl */`
+    uniform sampler2D uRelief, uDomain, uSatA, uSatB, uTexA, uTexB, uRef, uLut, uLutDiv;
+    uniform vec3 uChA, uChB, uOcean, uOcean2, uLand0, uLand1;
+    uniform vec2 uSize, uIso;
+    uniform int uBase, uHasData, uMode, uSmooth, uHasRelief;
+    uniform float uMix, uSatMix, uOpacity, uShade, uAnom, uDpr, uCoast, uSouth, uFade;
+    uniform vec4 uGrat;
+    varying vec2 vUv; varying vec3 vN;
+    float codeAt(sampler2D t, ivec2 p, vec3 ch) {
+      int W = int(uSize.x), H = int(uSize.y);
+      p.x = p.x < 0 ? p.x + W : (p.x >= W ? p.x - W : p.x);
+      p.y = clamp(p.y, 0, H - 1);
+      return floor(dot(texelFetch(t, p, 0).rgb, ch) * 255.0 + 0.5);
+    }
+    // x = value (log10 or linear units), y = 0 no model cell, 1 no value, 2 value
+    vec2 field(sampler2D t, vec3 ch) {
+      vec2 p = vec2(vUv.x * uSize.x, (1.0 - vUv.y) * uSize.y) - 0.5;
+      vec2 i0 = floor(p), f = p - i0; ivec2 q = ivec2(i0);
+      vec4 c = vec4(codeAt(t, q, ch), codeAt(t, q + ivec2(1, 0), ch), codeAt(t, q + ivec2(0, 1), ch), codeAt(t, q + ivec2(1, 1), ch));
+      float cn = f.y < 0.5 ? (f.x < 0.5 ? c.x : c.y) : (f.x < 0.5 ? c.z : c.w);
+      if (cn < 0.5) return vec2(0.0, 0.0);
+      if (cn > 254.5) return vec2(0.0, 1.0);
+      if (uSmooth == 0) return vec2(dec(cn), 2.0);
+      vec4 w = vec4((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+      w *= vec4(okc(c.x), okc(c.y), okc(c.z), okc(c.w));
+      vec4 v = vec4(dec(c.x), dec(c.y), dec(c.z), dec(c.w));
+      return vec2(dot(w, v) / max(w.x + w.y + w.z + w.w, 1e-6), 2.0);
+    }
+    float gline(float coord, float step, float px) {
+      float fw = max(fwidth(coord), 1e-7);
+      float d = abs(fract(coord / step + 0.5) - 0.5) * step;
+      return 1.0 - smoothstep(0.5 * px * fw, (0.5 * px + 1.0) * fw, d);
+    }
+    float gat(float coord, float at, float px) {
+      float fw = max(fwidth(coord), 1e-7);
+      return 1.0 - smoothstep(0.5 * px * fw, (0.5 * px + 1.0) * fw, abs(coord - at));
+    }
+    void main() {
+      float lat = vUv.y * 180.0 - 90.0, lon = vUv.x * 360.0 - 180.0;
+      float facing = clamp(vN.z, 0.0, 1.0);
+      float dom = texture(uDomain, vUv).r;
+      float fd = max(fwidth(dom), 1e-4);
+      float landA = smoothstep(0.5 - fd, 0.5 + fd, dom);
+      float sh = uHasRelief == 1 ? texture(uRelief, vUv).r : 0.5;
+      vec3 col;
+      if (uBase == 1) col = mix(texture(uSatA, vUv).rgb, texture(uSatB, vUv).rgb, uSatMix);
+      else col = mix(mix(uOcean2, uOcean, pow(facing, 0.6)), mix(uLand0, uLand1, sh), landA);
+      if (lat < uSouth) col *= 0.8;
+
+      // data value, time-interpolated in log space where both outputs have a value
+      vec2 s = vec2(0.0), r = vec2(0.0, 2.0);
+      if (uHasData == 1) {
+        vec2 a = field(uTexA, uChA), b = field(uTexB, uChB);
+        s = (a.y > 1.5 && b.y > 1.5) ? vec2(mix(a.x, b.x, uMix), 2.0) : (uMix < 0.5 ? a : b);
+        if (uMode == 1) r = field(uRef, vec3(1.0, 0.0, 0.0));
+      }
+      float iv = uMode == 1 ? s.x - r.x : s.x;
+      float q = uIso.x > 1.5 ? iv : iv / uIso.y;
+      float fq = fwidth(q);
+      if (s.y > 1.5 && r.y > 1.5) {
+        vec3 dc = uMode == 1 ? texture(uLutDiv, lutUv(0.5 + 0.5 * iv / uAnom)).rgb : texture(uLut, lutUv(colT(s.x))).rgb;
+        dc *= mix(1.0, 0.6 + 0.8 * sh, uShade);
+        if (uIso.x > 0.5 && fq < 0.35) {
+          float dd;
+          if (uIso.x > 1.5) { float fr = fract(q); dd = min(min(fr, 1.0 - fr), min(abs(fr - 0.30103), abs(fr - 0.69897))); }
+          else dd = abs(fract(q + 0.5) - 0.5);
+          float ln = 1.0 - smoothstep(0.5 * fq, 1.4 * fq, dd);
+          dc = mix(dc, dc * 0.22, 0.85 * ln);
+        }
+        col = mix(col, dc, uOpacity * uFade);
+      } else if (s.y > 0.5) {
+        float hp = mod(gl_FragCoord.x - gl_FragCoord.y, 7.0 * uDpr);
+        float hl = 1.0 - smoothstep(0.7 * uDpr, 1.5 * uDpr, hp);
+        col = mix(col, vec3(0.80, 0.84, 0.88), 0.3 * hl * uOpacity * uFade);
+      }
+      if (uCoast > 0.0) {
+        float ln = 1.0 - smoothstep(0.7 * fd, 1.9 * fd, abs(dom - 0.5));
+        col = mix(col, vec3(0.88, 0.92, 0.95), uCoast * ln);
+      }
+      if (uGrat.x > 0.5) {
+        float pole = 1.0 - smoothstep(80.0, 88.0, abs(lat));
+        float g = max(gline(lat, 30.0, 1.0), gline(lon, 30.0, 1.0) * pole) * 0.42;
+        g = max(g, max(gline(lat, uGrat.y, 0.8), gline(lon, uGrat.y, 0.8) * pole) * uGrat.z);
+        g = max(g, gat(lat, 0.0, 1.8) * 0.55);
+        float dash = step(0.5, fract(lon / uGrat.w));
+        float tr = max(max(gat(lat, 23.4366, 1.0), gat(lat, -23.4366, 1.0)), max(gat(lat, 66.5634, 1.0), gat(lat, -66.5634, 1.0)));
+        g = max(g, tr * dash * 0.38);
+        if (uSouth > -89.0) g = max(g, gat(lat, uSouth, 1.3) * step(0.5, fract(lon / uGrat.w + 0.25)) * 0.65);
+        col = mix(col, vec3(0.91, 0.93, 0.95), g);
+      }
+      col *= mix(0.45, 1.0, smoothstep(0.0, 0.3, facing));
+      col += vec3(0.27, 0.48, 0.82) * pow(1.0 - facing, 5.0) * 0.32;     // thin atmospheric rim
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+});
+const GEO_LO = new THREE.SphereGeometry(1, 384, 192);
+let GEO_HI = null;
+const globe = new THREE.Mesh(GEO_LO, globeMat);
+globe.renderOrder = 0; globe.frustumCulled = false;
+scene.add(globe);
+
+// halo: a soft scattering glow beyond the limb (view-dependent, decorative, outside the data)
+const atmo = new THREE.Mesh(new THREE.SphereGeometry(1.085, 128, 64), new THREE.ShaderMaterial({
+  side: THREE.BackSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  vertexShader: 'varying vec3 vN; void main(){ vN = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+  fragmentShader: `varying vec3 vN; void main(){
+    float x = clamp(-dot(vN, vec3(0.0, 0.0, 1.0)) / 0.4, 0.0, 1.0);    // 0 at the halo's edge, 1 at the limb
+    float i = 0.55 * pow(x, 2.6) + 0.45 * pow(x, 14.0);
+    gl_FragColor = vec4(mix(vec3(0.16, 0.32, 0.72), vec3(0.60, 0.80, 1.0), pow(x, 5.0)), 1.0) * i * 0.7; }`
+}));
+atmo.renderOrder = 9;
+scene.add(atmo);
+
+// ---------- terrain: LISFLOOD's elevation at the mesh nodes; CPU copy for picking, pins and rivers ----------
+let TER = null;
+function terrainH(lat, lon) {         // metres, interpolated over the same triangles the GPU draws
+  if (!TER) return 0;
+  const s = TER.stride, d = TER.d * s, WS = TER.nx / s, HS = TER.ny / s, W1 = TER.nx + 1;
+  let x = (lon + 180) / d; x = ((x % WS) + WS) % WS;
+  const y = Math.min(Math.max((90 - lat) / d, 0), HS - 1e-6);
+  const x0 = Math.min(Math.floor(x), WS - 1), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+  const H = (ix, iy) => TER.arr[iy * s * W1 + ix * s];
+  const hb = H(x0, y0), ha = H(x0 + 1, y0), hc = H(x0, y0 + 1), hd = H(x0 + 1, y0 + 1);
+  return fx >= fy ? hb + fx * (ha - hb) + fy * (hd - ha) : hb + fy * (hc - hb) + fx * (hd - hc);
+}
+const exagR = () => globeU.uExag.value;                 // radii per metre (0 = flat)
+const surfR = (lat, lon) => 1 + (exagR() ? terrainH(lat, lon) * exagR() : 0);
+const minAlt = () => MIN_ALT + (TER ? TER.max * exagR() : 0);
+
+// ---------- the river network: every model channel cell as a segment to its downstream cell ----------
+const riverU = {
+  uNetA: { value: BLANK }, uNetB: { value: BLANK }, uNetRef: { value: BLANK }, uLut: { value: BLANK }, uLutDiv: { value: BLANK },
+  uChA: { value: CH[0] }, uChB: { value: CH[0] }, uMix: { value: 0 },
+  uEnc: { value: new THREE.Vector2(0, 1) }, uRange: { value: new THREE.Vector2(0, 1) }, uLinear: { value: 0 }, uAnom: { value: 0.5 },
+  uColored: { value: 0 }, uMode: { value: 0 }, uMinUpa: { value: 6.8 }, uWBase: { value: 0.7 }, uWGain: { value: 1.15 },
+  uDpr: { value: DPR }, uAlpha: { value: 0.55 }, uR: { value: 1.0006 }, uViewport: { value: new THREE.Vector2(1, 1) },
+  uCam: { value: new THREE.Vector3() }, uTime: { value: 0 }, uFlow: { value: 1 }, uDashKm: { value: 100 }, uFade: { value: 1 },
+  uUp: { value: [new THREE.Vector3(-1, -1, 0), new THREE.Vector3(-1, -1, 0), new THREE.Vector3(-1, -1, 0)] },
+  uPinCol: { value: PIN_COLORS.map(c => new THREE.Color(c)) },
+  uCasing: { value: new THREE.Color('#05080c') }, uExag: { value: 0 }, uFocus: { value: 0 },
+};
+const RIVER_VS = GLSL_COMMON + /* glsl */`
+  attribute vec3 iA; attribute vec3 iB; attribute float iK; attribute float iUpa; attribute float iDA; attribute float iDB; attribute float iHi;
+  attribute vec2 iH;
+  uniform sampler2D uNetA, uNetB, uNetRef, uLut, uLutDiv;
+  uniform vec3 uChA, uChB, uCam;
+  uniform float uMix, uAnom, uMinUpa, uWBase, uWGain, uDpr, uAlpha, uR, uPass, uFade, uExag, uFocus;
+  uniform int uColored, uMode;
+  uniform vec2 uViewport;
+  uniform vec3 uUp[3];
+  uniform vec3 uPinCol[3];
+  varying vec3 vCol; varying vec3 vHC; varying float vA; varying float vGlow;
+  varying vec2 vP0; varying vec2 vP1; varying float vHW; varying float vDA; varying float vDB;
+  float codeN(sampler2D t, int k, vec3 ch) { return floor(dot(texelFetch(t, ivec2(k % 1024, k / 1024), 0).rgb, ch) * 255.0 + 0.5); }
+  void main() {
+    float lod = smoothstep(uMinUpa - 0.12, uMinUpa + 0.12, iUpa);
+    int k = int(iK + 0.5);
+    float fk = float(k);
+    float hi = 0.0; vec3 hc = vec3(1.0);
+    for (int j = 0; j < 3; j++) {
+      if (uUp[j].z > 0.5 && fk >= uUp[j].x && fk < uUp[j].y) { hi = 1.0; hc = uPinCol[j]; }
+    }
+    if (iHi > 0.5) { hi = 2.0; hc = uPinCol[int(iHi + 0.5) - 1]; }
+    bool vis = dot(iA, uCam) > 1.0 || dot(iB, uCam) > 1.0;
+    if (!vis || (lod < 0.01 && hi < 0.5)) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+    vec4 ca = projectionMatrix * modelViewMatrix * vec4(iA * (uR + iH.x * uExag), 1.0);
+    vec4 cb = projectionMatrix * modelViewMatrix * vec4(iB * (uR + iH.y * uExag), 1.0);
+    vec2 sa = (ca.xy / ca.w * 0.5 + 0.5) * uViewport, sb = (cb.xy / cb.w * 0.5 + 0.5) * uViewport;
+    float w = clamp(uWBase + uWGain * (iUpa - max(uMinUpa, 3.69)), 0.6, 6.5);
+    if (uColored == 0) w *= 0.8;
+    if (hi > 0.5) w = max(w, 1.4) + 0.4;
+    float hw = 0.5 * w * uDpr;
+    float ext = hw + (uPass < 0.5 ? (hi > 0.5 ? 3.2 : 1.6) : 0.8) * uDpr;
+    vec2 d = sb - sa; float L = length(d);
+    vec2 dir = L > 1e-3 ? d / L : vec2(1.0, 0.0), nr = vec2(-dir.y, dir.x);
+    vec2 sp = mix(sa, sb, position.x) + dir * (position.x * 2.0 - 1.0) * ext + nr * position.y * ext;
+    vec4 cp = mix(ca, cb, position.x);
+    gl_Position = vec4((sp / uViewport * 2.0 - 1.0) * cp.w, cp.z, cp.w);
+    vP0 = sa; vP1 = sb; vHW = hw; vDA = iDA; vDB = iDB; vGlow = hi; vHC = hc;
+    vec3 col = vec3(0.64, 0.74, 0.84);
+    float a = uAlpha * lod;
+    if (uColored == 1) {
+      float c1 = codeN(uNetA, k, uChA), c2 = codeN(uNetB, k, uChB);
+      bool ok = true; float v;
+      if (okc(c1) && okc(c2)) v = mix(dec(c1), dec(c2), uMix);
+      else { float c = uMix < 0.5 ? c1 : c2; ok = okc(c); v = dec(c); }
+      if (ok && uMode == 1) {
+        float cr = codeN(uNetRef, k, vec3(1.0, 0.0, 0.0));
+        if (okc(cr)) col = textureLod(uLutDiv, lutUv(0.5 + 0.5 * (v - dec(cr)) / uAnom), 0.0).rgb; else ok = false;
+      } else if (ok) col = textureLod(uLut, lutUv(colT(v)), 0.0).rgb;
+      if (!ok) col = vec3(0.41, 0.44, 0.47);
+      a = lod * uFade;
+    }
+    if (hi > 0.5) a = max(a, 0.9);
+    else if (uFocus > 0.5) a *= 0.3;            // a river is selected: the rest of the network steps back
+    vCol = col; vA = a;
+  }`;
+const RIVER_FS = /* glsl */`
+  precision highp float;
+  uniform float uDpr, uTime, uDashKm, uPass; uniform int uFlow; uniform vec3 uCasing;
+  varying vec3 vCol; varying vec3 vHC; varying float vA; varying float vGlow;
+  varying vec2 vP0; varying vec2 vP1; varying float vHW; varying float vDA; varying float vDB;
+  void main() {
+    vec2 p = gl_FragCoord.xy, ab = vP1 - vP0;
+    float l2 = dot(ab, ab);
+    float t = l2 > 1e-6 ? clamp(dot(p - vP0, ab) / l2, 0.0, 1.0) : 0.0;
+    float dist = length(p - (vP0 + ab * t));
+    if (uPass < 0.5) {
+      float halo = vGlow > 0.5 ? 2.4 * uDpr : 1.0 * uDpr;
+      float a = 1.0 - smoothstep(vHW + halo - 0.5 * uDpr, vHW + halo + 0.6 * uDpr, dist);
+      float aa = vGlow > 0.5 ? a * 0.95 : a * 0.78 * vA;
+      if (aa < 0.004) discard;
+      gl_FragColor = vec4(vGlow > 0.5 ? vHC : uCasing, aa);
+    } else {
+      float a = 1.0 - smoothstep(vHW - 0.5 * uDpr, vHW + 0.5 * uDpr, dist);
+      vec3 c = vCol;
+      if (uFlow == 1) {
+        float ph = fract(mix(vDA, vDB, t) / uDashKm + uTime);
+        float pulse = smoothstep(0.62, 0.9, ph) * (1.0 - smoothstep(0.9, 0.98, ph));
+        c = mix(c, min(c * 1.3 + 0.2, vec3(1.0)), pulse * 0.8);
+      }
+      float aa = a * vA;
+      if (aa < 0.004) discard;
+      gl_FragColor = vec4(c, aa);
+    }
+  }`;
+let NET = null, riverGeo = null;
+const riverMeshes = [];
+function makeRiverMesh(pass) {
+  const u = { ...riverU, uPass: { value: pass } };
+  const m = new THREE.ShaderMaterial({ uniforms: u, vertexShader: RIVER_VS, fragmentShader: RIVER_FS, transparent: true, depthWrite: false, depthTest: true });
+  const mesh = new THREE.Mesh(riverGeo, m);
+  mesh.frustumCulled = false; mesh.renderOrder = 2 + pass;
+  scene.add(mesh); riverMeshes.push(mesh);
+}
+async function loadNetwork() {
+  const M = man.network; if (!M) return;
+  const { arr: A } = await loadCodes(M.file);
+  const n = M.n, R = M.rows, W = M.width, g = man.grid;
+  const dLat = (g.N - g.S) / g.ny, dLon = (g.E - g.W) / g.nx;
+  const l0 = Math.log10(M.min_km2), l1 = Math.log10(M.max_km2);
+  const lat = new Float32Array(n), lon = new Float32Array(n), upa = new Float32Array(n), down = new Int32Array(n);
+  const px = (p, k) => ((p * R + Math.floor(k / W)) * W + (k % W)) * 4;
+  for (let k = 0; k < n; k++) {
+    const o0 = px(0, k), o1 = px(1, k), o2 = px(2, k), o3 = px(3, k);
+    lat[k] = g.N - (A[o0] * 256 + A[o0 + 1] + 0.5) * dLat;
+    lon[k] = g.W + (A[o1] * 256 + A[o1 + 1] + 0.5) * dLon;
+    upa[k] = l0 + (A[o2] * 256 + A[o2 + 1]) / 65535 * (l1 - l0);
+    const dk = (A[o3] << 16) | (A[o3 + 1] << 8) | A[o3 + 2];
+    down[k] = dk ? k - dk : -1;
+  }
+  const dir = new Float32Array(3 * n);
+  for (let k = 0; k < n; k++) {
+    const p = lat[k] * Math.PI / 180, l = lon[k] * Math.PI / 180;
+    dir[3 * k] = Math.cos(p) * Math.cos(l); dir[3 * k + 1] = Math.sin(p); dir[3 * k + 2] = -Math.cos(p) * Math.sin(l);
+  }
+  const dist = new Float32Array(n), size = new Int32Array(n).fill(1), seg = new Float32Array(n);
+  for (let k = 0; k < n; k++) {               // the downstream cell always comes first
+    const j = down[k]; if (j < 0) continue;
+    const c = dir[3 * k] * dir[3 * j] + dir[3 * k + 1] * dir[3 * j + 1] + dir[3 * k + 2] * dir[3 * j + 2];
+    seg[k] = Math.acos(Math.min(1, c)) * EARTH_KM;
+    dist[k] = dist[j] + seg[k];
+  }
+  for (let k = n - 1; k >= 0; k--) if (down[k] >= 0) size[down[k]] += size[k];
+  const iA = new Float32Array(3 * n), iB = new Float32Array(3 * n), iK = new Float32Array(n), iDA = new Float32Array(n), iDB = new Float32Array(n);
+  for (let k = 0; k < n; k++) {
+    const j = down[k] >= 0 ? down[k] : k;
+    iA.set(dir.subarray(3 * k, 3 * k + 3), 3 * k); iB.set(dir.subarray(3 * j, 3 * j + 3), 3 * k);
+    iK[k] = k; iDA[k] = dist[k]; iDB[k] = dist[j];
+  }
+  const bins = new Map();                    // 0.5 deg bins for picking
+  for (let k = 0; k < n; k++) {
+    const key = Math.floor((lat[k] + 90) * 2) * 720 + Math.floor((lon[k] + 180) * 2);
+    let b = bins.get(key); if (!b) bins.set(key, b = []); b.push(k);
+  }
+  riverGeo = new THREE.InstancedBufferGeometry();
+  riverGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, -1, 0, 1, -1, 0, 0, 1, 0, 1, 1, 0]), 3));
+  riverGeo.setIndex([0, 1, 2, 2, 1, 3]);
+  riverGeo.setAttribute('iA', new THREE.InstancedBufferAttribute(iA, 3));
+  riverGeo.setAttribute('iB', new THREE.InstancedBufferAttribute(iB, 3));
+  riverGeo.setAttribute('iK', new THREE.InstancedBufferAttribute(iK, 1));
+  riverGeo.setAttribute('iUpa', new THREE.InstancedBufferAttribute(upa, 1));
+  riverGeo.setAttribute('iDA', new THREE.InstancedBufferAttribute(iDA, 1));
+  riverGeo.setAttribute('iDB', new THREE.InstancedBufferAttribute(iDB, 1));
+  const hiAttr = new THREE.InstancedBufferAttribute(new Float32Array(n), 1); hiAttr.setUsage(THREE.DynamicDrawUsage);
+  riverGeo.setAttribute('iHi', hiAttr);
+  const hAttr = new THREE.InstancedBufferAttribute(new Float32Array(2 * n), 2);
+  riverGeo.setAttribute('iH', hAttr);
+  riverGeo.instanceCount = n;
+  let maxDist = 0; for (let k = 0; k < n; k++) if (dist[k] > maxDist) maxDist = dist[k];
+  NET = { n, lat, lon, upa, down, dir, dist, size, bins, hiAttr, hAttr, maxDist };
+  makeRiverMesh(0); makeRiverMesh(1);
+}
+function setRiverHeights() {           // segment ends on the drawn terrain surface (metres)
+  if (!NET || !TER) return;
+  const h = NET.hAttr.array, { n, lat, lon, down } = NET;
+  for (let k = 0; k < n; k++) {
+    const j = down[k] >= 0 ? down[k] : k;
+    h[2 * k] = terrainH(lat[k], lon[k]); h[2 * k + 1] = terrainH(lat[j], lon[j]);
+  }
+  NET.hAttr.needsUpdate = true;
+}
+// main stem through cell k: from the head of the mapped network (following the larger upstream area at
+// every confluence; in drainage order that child is always the next cell) down to the outlet
+function mainStem(k) {
+  const up = [];
+  for (let j = k; j + 1 < NET.n && NET.down[j + 1] === j; j++) up.push(j + 1);
+  const path = up.reverse();
+  for (let i = k; i >= 0; i = NET.down[i]) path.push(i);
+  return path;
+}
+function minUpaFor(kpp) { const l0 = Math.log10(man.network.min_km2); return Math.min(6.2, Math.max(l0, l0 + 0.9 * Math.log10(Math.max(kpp, 1e-3) / 3.5))); }
+function nearestRiver(lat, lon, maxKm, minUpa) {
+  if (!NET) return -1;
+  const p = dirFromLatLon(lat, lon), rDeg = maxKm / 111.2;
+  const b0 = Math.floor((lat - rDeg + 90) * 2), b1 = Math.floor((lat + rDeg + 90) * 2);
+  const cl = Math.max(0.05, Math.cos(lat * Math.PI / 180)), lr = Math.min(180, rDeg / cl);
+  const c0 = Math.floor((lon - lr + 180) * 2), c1 = Math.floor((lon + lr + 180) * 2);
+  let best = -1, bd = Math.cos(maxKm / EARTH_KM);
+  for (let bi = b0; bi <= b1; bi++) for (let ci = c0; ci <= c1; ci++) {
+    const b = NET.bins.get(bi * 720 + ((ci % 720) + 720) % 720); if (!b) continue;
+    for (const k of b) {
+      if (NET.upa[k] < minUpa) continue;
+      const c = p.x * NET.dir[3 * k] + p.y * NET.dir[3 * k + 1] + p.z * NET.dir[3 * k + 2];
+      if (c > bd) { bd = c; best = k; }
+    }
+  }
+  return best;
+}
+
+// ---------- graticule labels (lines are drawn by the globe shader) ----------
+const STEPS = [[70, 30], [24, 10], [9, 5], [2.5, 1], [0, 0.5]];
+function gratStep() { const span = 2 * THREE.MathUtils.radToDeg(surfaceSpan(camera.position.length())); return STEPS.find(([s]) => span > s)[1]; }
+const gl = $('gridlab');
+const tmpV = new THREE.Vector3();
+let lastCam = '';
+function updateLabels() {
+  const key = viewCam.position.toArray().map(v => v.toFixed(5)).join() + $('grat').checked + canvas.clientWidth + $('panel').className + document.body.className;
+  if (key === lastCam) return; lastCam = key;
+  const step = gratStep();
+  globeU.uGrat.value.set($('grat').checked ? 1 : 0, step, step === 30 ? 0 : 0.2, Math.max(0.25, step / 4));
+  gl.innerHTML = '';
+  if (!$('grat').checked) return;
+  const [latC, lonC] = latLonOf(camera.position);
+  const spanDeg = THREE.MathUtils.radToDeg(surfaceSpan(camera.position.length()));
+  const r = canvas.getBoundingClientRect();
+  const covers = ['.panel', '.dock', '.nav'].map(s => document.querySelector(s).getBoundingClientRect());
+  const camDir = viewCam.position.clone();
+  const put = (lat, lon, text) => {
+    const p = dirFromLatLon(lat, lon);
+    if (p.dot(tmpV.copy(camDir).sub(p).normalize()) < 0.18) return;
+    p.multiplyScalar(surfR(lat, lon)).project(viewCam);
+    const x = (p.x + 1) / 2 * r.width + r.left, y = (1 - p.y) / 2 * r.height + r.top;
+    if (x < 8 || y < 8 || x > r.width - 8 || y > r.height - 8) return;
+    for (const b of covers) if (x > b.left - 20 && x < b.right + 20 && y > b.top - 8 && y < b.bottom + 8) return;
+    const s = document.createElement('span'); s.style.left = `${x}px`; s.style.top = `${y}px`; s.textContent = text; gl.appendChild(s);
+  };
+  const pr = document.querySelector('.panel').getBoundingClientRect(), dr = document.querySelector('.dock').getBoundingClientRect();
+  const panelLeft = pr.top < r.height * 0.3;
+  const fx0 = panelLeft ? pr.right + 12 : 12, fx1 = r.width - 12;
+  const fy0 = 12, fy1 = Math.min(dr.top + 24, panelLeft ? r.height : pr.top) - 12;
+  const hitL = pickSurface(fx0 + 44, (fy0 + fy1) / 2), hitB = pickSurface((fx0 + fx1) / 2, fy1 - 18);
+  const lonL = hitL ? latLonOf(hitL)[1] : lonC - 0.55 * spanDeg;
+  const latL = Math.max(-80, Math.min(80, hitB ? latLonOf(hitB)[0] : latC - 0.55 * spanDeg));
+  const near = (v, c, w) => Math.abs(v - c) <= w;
+  const lab = v => step < 1 ? +v.toFixed(1) : v;
+  for (let lat = -90 + step; lat < 90 - 1e-9; lat += step) if (near(lat, latC, spanDeg * 1.6 + step)) put(lat, lonL, fmtLat(lab(lat)));
+  for (let lon = -180; lon < 180 - 1e-9; lon += step) {
+    const dl = ((lon - lonC + 540) % 360) - 180;
+    if (Math.abs(dl) <= spanDeg * 1.6 / Math.max(0.2, Math.cos(THREE.MathUtils.degToRad(latC))) + step) put(latL, lon, fmtLon(lab(lon)));
+  }
+}
+
+// ---------- state ----------
+let man = null, layer = null, comp = null, spec = null;
+let tf = 0, playing = false, speed = 1, introT = 0, introStart = 0;
+let shown = null, refEntry = null, domainCodes = null;
+const ui = { mode: 'value', linear: false, base: 'relief', exag: 0 };
+const mem = new Map();               // layer key -> { range, anom, cmap, cmapDiv }
+const lutCache = new Map();
+const lutFor = name => { if (!lutCache.has(name)) lutCache.set(name, lutTexture(man.colormaps[name])); return lutCache.get(name); };
+const lkey = L => `${L.compartment}|${L.species}`;
+const isLogL = () => (layer.scale || 'log') === 'log';
+const cur = () => mem.get(lkey(layer));
+const isNet = () => layer && layer.kind === 'network';
+const decL = (L, c) => L.enc[0] + (c - 1) / 253 * (L.enc[1] - L.enc[0]);
+const toVal = x => isLogL() ? Math.pow(10, x) : x;
+
+function setUniformsForLayer() {
+  const L = layer, m = cur();
+  const lut = lutFor(m.cmap), lutDiv = lutFor(m.cmapDiv);
+  for (const U of [globeU, riverU]) {
+    U.uEnc.value.set(L.enc[0], L.enc[1]); U.uRange.value.set(m.range[0], m.range[1]);
+    U.uLinear.value = ui.linear && isLogL() ? 1 : 0; U.uAnom.value = m.anom;
+    U.uLut.value = lut; U.uLutDiv.value = lutDiv; U.uMode.value = ui.mode === 'departure' ? 1 : 0;
+  }
+  globeU.uHasData.value = isNet() ? 0 : 1;
+  if (!isNet()) globeU.uSize.value.set(L.width, L.height);
+  riverU.uColored.value = isNet() ? 1 : 0;
+  updateIso();
+}
+function updateIso() {
+  if (!layer || !$('iso').checked) { globeU.uIso.value.set(0, 1); return; }
+  if (ui.mode === 'departure') { globeU.uIso.value.set(1, isLogL() ? Math.log10(2) : cur().anom / 2); return; }
+  const span = cur().range[1] - cur().range[0];
+  if (isLogL()) globeU.uIso.value.set(span > 1.2 ? 1 : 2, 1);
+  else { const s0 = Math.pow(10, Math.floor(Math.log10(span / 4))); globeU.uIso.value.set(1, [1, 2, 5, 10].map(x => x * s0).find(s => span / s <= 6)); }
+}
+
+// frames: tf is a fractional output index; with smooth time the two outputs around it are blended
+function wanted() {
+  const n = man.dates.length;
+  const f = Math.min(Math.max($('smootht').checked ? tf : Math.round(tf), 0), n - 1);
+  const a = Math.floor(f + 1e-6), b = Math.min(a + 1, n - 1);
+  return { a, b, m: b > a ? Math.max(0, f - a) : 0 };
+}
+function applyFrame() {
+  if (!layer) return false;
+  const { a, b, m } = wanted(), P = layer.per_file || 3;
+  const ua = layer.files[Math.floor(a / P)], ub = layer.files[Math.floor(b / P)];
+  const ea = getFile(ua), eb = getFile(ub);
+  const keep = new Set([ua, ub]);
+  if (ui.mode === 'departure') { refEntry = getFile(layer.ref); keep.add(layer.ref); }
+  for (let j = 1; j <= 2; j++) { const u = layer.files[Math.floor(b / P) + j] || layer.files[j - 1]; if (u) { getFile(u); keep.add(u); } }
+  evict(keep);
+  const ready = ea.tex && eb.tex && (ui.mode !== 'departure' || (refEntry && refEntry.tex));
+  if (ready) {
+    const U = isNet() ? riverU : globeU;
+    if (isNet()) { riverU.uNetA.value = ea.tex; riverU.uNetB.value = eb.tex; if (refEntry && refEntry.tex) riverU.uNetRef.value = refEntry.tex; }
+    else { globeU.uTexA.value = ea.tex; globeU.uTexB.value = eb.tex; if (refEntry && refEntry.tex) globeU.uRef.value = refEntry.tex; }
+    U.uChA.value = CH[a % P]; U.uChB.value = CH[b % P]; U.uMix.value = m;
+    const key = `${lkey(layer)}|${a}|${b}|${m.toFixed(3)}|${ui.mode}`;
+    if (!shown || shown.key !== key) { shown = { a, b, m, key, ea, eb }; onFrameShown(); }
+    statusEl.hidden = true; loadingSince = 0;
+  } else {
+    if (!loadingSince) loadingSince = performance.now();
+    if (performance.now() - loadingSince > 350) { statusEl.hidden = false; statusEl.textContent = 'Loading maps…'; }
+  }
+  return ready;
+}
+let loadingSince = 0;
+function frameDateMs(f) {
+  const n = man.dates.length, a = Math.floor(f), b = Math.min(a + 1, n - 1);
+  const t0 = isoMs(man.dates[a]), t1 = isoMs(man.dates[b]);
+  return t0 + (t1 - t0) * (f - a);
+}
+let lastDateTxt = '';
+function onFrameShown() {
+  const { a, b, m } = shown;
+  const f = a + m;
+  const txt = fmtDate(frameDateMs(f));
+  if (txt !== lastDateTxt) { $('date').textContent = txt; lastDateTxt = txt; }
+  const between = b > a && m > 0.02 && m < 0.98;
+  const dm = ms => { const d = new Date(ms); return `${d.getUTCDate()} ${MS[d.getUTCMonth()]}`; };
+  $('interp').textContent = between ? `between the ${dm(isoMs(man.dates[a]))} and ${dm(isoMs(man.dates[b]))} outputs` : (a === 0 && m < 0.02 ? 'first output (start)' : 'model output');
+  const near = Math.round(f);
+  if (near !== lastHistFrame) { lastHistFrame = near; drawHist(); [...$('months').children].forEach(s => s.dataset.on = String(+s.dataset.i === near)); }
+  markChart(); updateSat(); hovCursor();
+  const now = performance.now();
+  if (!playing || now - lastSlow > 180) { lastSlow = now; refreshReadout(); updatePinValues(); drawProfile(); }
+}
+let lastHistFrame = -1, lastSlow = 0;
+
+// satellite base: the 2004 monthly composites blended for the date shown
+const satCache = new Map();
+function satTex(i) {
+  const url = man.satellite.files[i];
+  if (!satCache.has(url)) { const e = { tex: null }; e.p = loadImageTexture(url).then(t => (e.tex = t)); satCache.set(url, e); }
+  const e = satCache.get(url); satCache.delete(url); satCache.set(url, e);
+  while (satCache.size > 4) { const [k, v] = satCache.entries().next().value; if (v.tex) v.tex.dispose(); satCache.delete(k); }
+  return e;
+}
+function updateSat() {
+  if (ui.base !== 'satellite' || !man.satellite || !shown) return;
+  const S = man.satellite, ms = frameDateMs(shown.a + shown.m);
+  if (S.files.length !== 12) { const e = satTex(0); if (e.tex) { globeU.uSatA.value = globeU.uSatB.value = e.tex; globeU.uBase.value = 1; } return; }
+  const d = new Date(ms), y = d.getUTCFullYear(), mo = d.getUTCMonth();
+  const mid = (yy, mm) => Date.UTC(yy, mm, 15);
+  let m0, m1, w;
+  if (ms < mid(y, mo)) { m0 = (mo + 11) % 12; m1 = mo; w = (ms - mid(y, mo - 1)) / (mid(y, mo) - mid(y, mo - 1)); }
+  else { m0 = mo; m1 = (mo + 1) % 12; w = (ms - mid(y, mo)) / (mid(y, mo + 1) - mid(y, mo)); }
+  const e0 = satTex(m0), e1 = satTex(m1);
+  if (e0.tex && e1.tex) {
+    globeU.uSatA.value = e0.tex; globeU.uSatB.value = e1.tex; globeU.uSatMix.value = Math.max(0, Math.min(1, w)); globeU.uBase.value = 1;
+    const ct = `Satellite: ${S.credit || 'NASA Blue Marble Next Generation'}, ${MONTH_NAMES[m0]}–${MONTH_NAMES[m1]} ${S.year || 2004} composites blended for the date shown (context, not the simulated year).`;
+    if ($('credit').textContent !== ct) $('credit').textContent = ct;
+  } else Promise.all([e0.p, e1.p]).then(() => updateSat()).catch(() => {});
+}
+function setBase(b) {
+  ui.base = b;
+  if (b === 'satellite') updateSat();
+  else { globeU.uBase.value = 0; $('credit').textContent = man.relief ? 'Relief: hillshade of the LISFLOOD elevation map inside the model domain.' : ''; }
+}
+
+// ---------- layers ----------
+function loadLayer() {
+  layer = man.layers.find(l => l.compartment === comp && l.species === spec);
+  if (!layer) { statusEl.hidden = false; statusEl.textContent = 'No data for this choice'; return; }
+  if (!mem.has(lkey(layer))) mem.set(lkey(layer), { range: layer.display.slice(), anom: layer.anom_range || 0.5, cmap: layer.colormap || 'plasma', cmapDiv: (man.diverging || ['RdBu_r'])[0] });
+  shown = null; refEntry = null;
+  const net = isNet();
+  $('rivers').disabled = net; $('lab-rivers').classList.toggle('off', net);
+  if (net) $('rivers').checked = true;
+  $('smooth').disabled = net; $('smooth').parentElement.classList.toggle('off', net);
+  $('iso').disabled = net; $('iso').parentElement.classList.toggle('off', net);
+  $('shade').disabled = net;
+  setUniformsForLayer(); syncLegendControls(); drawLegend(); drawHist(); drawChart(); updateHighlights(); computeSeries(); refreshReadout(); updatePinValues();
+  lastHistFrame = -1;
+}
+
+// ---------- legend ----------
+function niceTicks(lo, hi, log) {
+  if (!log) {
+    const span = hi - lo, step0 = Math.pow(10, Math.floor(Math.log10(span / 4)));
+    const step = [1, 2, 5, 10].map(m => m * step0).find(s => span / s <= 5);
+    const out = []; for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-12; v += step) out.push(+v.toPrecision(6));
+    return out;
+  }
+  const out = [], k0 = Math.floor(Math.log10(lo)), k1 = Math.ceil(Math.log10(hi));
+  for (let k = k0; k <= k1; k++) for (const m of [1, 2, 5]) { const v = m * Math.pow(10, k); if (v >= lo * 0.999 && v <= hi * 1.001) out.push(+v.toPrecision(3)); }
+  const dec = out.filter(v => /^1(\.0*)?e/.test(v.toExponential()));
+  return out.length > 7 && dec.length >= 2 ? dec : out;
+}
+function sizeCanvas(cv) {
+  const r = cv.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = Math.max(1, Math.round(r.width * dpr)); cv.height = Math.max(1, Math.round(r.height * dpr));
+  return [cv.getContext('2d'), cv.width, cv.height, dpr];
+}
+const lutRgb = (name, t) => { const d = lutFor(name).userData.rgb, i = Math.max(0, Math.min(255, Math.round(t * 255))) * 4; return `rgb(${d[i]},${d[i + 1]},${d[i + 2]})`; };
+function colT(x) { const m = cur(); if (ui.linear && isLogL()) { const a = 10 ** m.range[0], b = 10 ** m.range[1]; return (10 ** x - a) / (b - a); } return (x - m.range[0]) / (m.range[1] - m.range[0]); }
+function syncLegendControls() {
+  const L = layer, m = cur(), dep = ui.mode === 'departure';
+  const step = (L.enc[1] - L.enc[0]) / 253;
+  for (const id of ['rlo', 'rhi']) { const e = $(id); e.min = L.enc[0]; e.max = L.enc[1]; e.step = step; }
+  $('rlo').value = m.range[0]; $('rhi').value = m.range[1];
+  $('histwrap').hidden = dep; $('anomrow').hidden = !dep;
+  $('anom').value = Math.max(0, ANOM_STEPS.indexOf(m.anom));
+  $('anom-out').textContent = isLogL() ? `±${m.anom} dec (${ratioLabel(-m.anom)}…${ratioLabel(m.anom)})` : `±${fmtSig(m.anom)} ${L.units}`;
+  const cm = $('cmap'), names = dep ? man.diverging : man.sequential, sel = dep ? m.cmapDiv : m.cmap;
+  cm.innerHTML = names.map(n => `<option value="${n}"${n === sel ? ' selected' : ''}>${n.replace('_r', ' (reversed)')}</option>`).join('');
+  makeSeg($('scale'), [['log', 'log'], ['linear', 'linear', !isLogL() || dep]], ui.linear && isLogL() ? 'linear' : 'log', v => { ui.linear = v === 'linear'; setUniformsForLayer(); drawLegend(); drawHist(); });
+  $('scale').hidden = dep || !isLogL();
+  $('reset').hidden = dep;
+}
+function drawLegend() {
+  const L = layer, m = cur(), dep = ui.mode === 'departure';
+  const where = L.compartment_label.toLowerCase();
+  $('legend-title').textContent = dep ? `${L.species} in ${where}: departure from its mean` : `${L.species} in ${where} (${L.units})`;
+  $('scale-tag').textContent = dep ? (isLogL() ? 'ratio, log scale' : 'difference') : (ui.linear && isLogL() ? 'linear scale' : isLogL() ? 'log₁₀ scale' : 'linear scale');
+  const [ctx, w, h] = sizeCanvas($('bar'));
+  for (let x = 0; x < w; x++) { ctx.fillStyle = lutRgb(dep ? m.cmapDiv : m.cmap, x / (w - 1)); ctx.fillRect(x, 0, 1, h); }
+  const tk = $('ticks'); tk.innerHTML = '';
+  const bw = $('bar').getBoundingClientRect().width;
+  let last = -1e9;
+  const put = (x, text) => { if (x - last < 34 || x < -1 || x > bw + 1) return; const s = document.createElement('span'); s.style.left = `${x}px`; s.textContent = text; tk.appendChild(s); last = x; };
+  if (dep) {
+    if (isLogL()) for (const r of [1 / 1000, 1 / 100, 1 / 30, 1 / 10, 1 / 5, 1 / 3, 1 / 2, 1 / 1.5, 1, 1.5, 2, 3, 5, 10, 30, 100, 1000]) { const d = Math.log10(r); if (Math.abs(d) <= m.anom * 1.0001) put((d / m.anom + 1) / 2 * bw, r === 1 ? '×1' : ratioLabel(d)); }
+    else for (const v of niceTicks(-m.anom, m.anom, false)) put((v / m.anom + 1) / 2 * bw, (v > 0 ? '+' : '') + fmtTick(v));
+  } else {
+    const lo = toVal(m.range[0]), hi = toVal(m.range[1]);
+    for (const v of niceTicks(lo, hi, isLogL() && !ui.linear)) put(colT(isLogL() ? Math.log10(v) : v) * bw, fmtTick(v));
+  }
+  const pct = isLogL() ? `${((10 ** L.quant_step - 1) * 100).toFixed(1)} %` : `${fmtSig(L.quant_step)} ${L.units}`;
+  const what = isNet() ? 'river cells' : 'wet land area';
+  $('range-note').textContent = dep
+    ? `${isLogL() ? 'Value ÷ geometric mean' : 'Value − mean'} of all ${man.dates.length} outputs at the same place. Red: above the mean; blue: below.`
+    : `Bars: share of ${what} on the nearest output date over the whole coded range ${fmtSig(L.min)}–${fmtSig(L.max)} ${L.units}; drag the handles to set the colour range (default: 2nd–98th percentile). Coding step ${pct}.`;
+  const keys = [];
+  if (isNet()) {
+    keys.push(`<div><span class="sw width"></span><span>Model channel cells with ≥ ${man.network.min_km2.toLocaleString('en-US')} km² upstream area; width grows with upstream area, smaller rivers appear as you zoom in</span></div>`);
+    keys.push(`<div><span class="sw dryline"></span><span>No value: less than ${man.dry_mm} mm of water, or 16-bit overflow</span></div>`);
+  } else {
+    keys.push(`<div><span class="sw hatch"></span><span>No value: less than ${man.dry_mm} mm of water in the pixel's cells. Pixels are ${(360 / L.width).toFixed(3)}° wide.</span></div>`);
+    if ($('iso').checked) keys.push(`<div><span class="sw iso"></span><span>${ui.mode === 'departure' ? (isLogL() ? 'Isolines at ×2 steps from the mean' : 'Isolines at half the range') : globeU.uIso.value.x > 1.5 ? 'Isolines at 1, 2 and 5 × 10ⁿ' : isLogL() ? 'Isolines every factor of 10' : 'Isolines at round values'}</span></div>`);
+  }
+  if ($('flow').checked && $('rivers').checked && man.network) keys.push(`<div><span class="sw flow"></span><span>Dashes run downstream along the model's routing; their speed is not the flow velocity</span></div>`);
+  if (exagR()) keys.push(`<div><span class="sw" style="background:linear-gradient(90deg,#3a4350,#c9d1da)"></span><span>Terrain raised ×${ui.exag} (LISFLOOD elevation, ${man.terrain.node_deg}° mesh)</span></div>`);
+  $('keys').innerHTML = keys.join('');
+  drawHov(); drawProfile();
+}
+const HPAD = 6;                       // half the range thumb: the handles' centres span [HPAD, width - HPAD]
+function drawHist() {
+  if (!layer || ui.mode === 'departure') return;
+  const L = layer, m = cur();
+  const [ctx, w, h, dpr] = sizeCanvas($('hist'));
+  const fi = Math.max(0, Math.min(man.dates.length - 1, Math.round(shown ? shown.a + shown.m : tf)));
+  const hs = L.hist[fi] || [], nb = hs.length;
+  ctx.clearRect(0, 0, w, h);
+  if (!nb) return;
+  const mx = Math.max(...hs), x0 = HPAD * dpr, x1 = w - HPAD * dpr, bw = (x1 - x0) / nb;
+  for (let i = 0; i < nb; i++) {
+    const xv = L.enc[0] + (i + 0.5) / nb * (L.enc[1] - L.enc[0]);
+    const t = colT(xv), inside = t >= 0 && t <= 1;
+    const bh = mx > 0 ? Math.max(hs[i] > 0 ? 1 : 0, hs[i] / mx * (h - 2)) : 0;
+    ctx.globalAlpha = inside ? 1 : 0.32;
+    ctx.fillStyle = lutRgb(m.cmap, Math.max(0, Math.min(1, t)));
+    ctx.fillRect(x0 + i * bw + 0.5, h - bh, Math.max(1, bw - 1), bh);
+  }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = 'rgba(232,237,242,0.55)';
+  for (const v of m.range) { const x = x0 + (v - L.enc[0]) / (L.enc[1] - L.enc[0]) * (x1 - x0); ctx.fillRect(Math.round(x) - dpr * 0.5, 0, dpr, h); }
+}
+function setRange(lo, hi) {
+  const m = cur(), step = layer.quant_step;
+  if (hi - lo < step * 4) { if (lo !== m.range[0]) lo = hi - step * 4; else hi = lo + step * 4; }
+  m.range = [lo, hi];
+  setUniformsForLayer(); drawLegend(); drawHist(); drawChart();
+}
+
+// ---------- time strip ----------
+const SVGNS = 'http://www.w3.org/2000/svg';
+const PAD = 7;
+let chartX = null, chartY = null;
+function el(name, attrs) { const e = document.createElementNS(SVGNS, name); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+function drawChart() {
+  const svg = $('chart'); svg.innerHTML = '';
+  if (!layer || !layer.p50) return;
+  const r = svg.getBoundingClientRect(), W = Math.max(50, r.width), H = Math.max(30, r.height);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const n = man.dates.length, m = cur();
+  chartX = i => PAD + (n > 1 ? i / (n - 1) : 0.5) * (W - 2 * PAD);
+  const vals = [...layer.p10, ...layer.p90].filter(v => v !== null);
+  for (const p of pins) { const s = series.get(skey(layer, p)); if (s) for (const v of s) if (isFinite(v)) vals.push(v); }
+  let y0 = Math.min(m.range[0], ...vals), y1 = Math.max(m.range[1], ...vals);
+  if (y1 - y0 < 1e-9) { y0 -= 0.5; y1 += 0.5; }
+  const pad = (y1 - y0) * 0.06; y0 -= pad; y1 += pad;
+  chartY = v => H - 2 - (v - y0) / (y1 - y0) * (H - 4);
+  for (const v of niceTicks(toVal(y0), toVal(y1), isLogL())) {
+    const y = chartY(isLogL() ? Math.log10(v) : v); if (y < 8 || y > H - 4) continue;
+    svg.appendChild(el('line', { x1: PAD, x2: W - PAD, y1: y, y2: y, stroke: tok('--fg'), 'stroke-opacity': 0.08 }));
+    const t = el('text', { x: W - PAD, y: y - 2, 'text-anchor': 'end', fill: tok('--faint'), 'font-size': 10, 'font-family': tok('--font-data') });
+    t.textContent = fmtTick(v); svg.appendChild(t);
+  }
+  const ok = i => layer.p10[i] !== null;
+  const up = [], dn = [];
+  for (let i = 0; i < n; i++) if (ok(i)) { up.push(`${chartX(i)},${chartY(layer.p90[i])}`); dn.unshift(`${chartX(i)},${chartY(layer.p10[i])}`); }
+  if (up.length) svg.appendChild(el('path', { d: `M${up.join('L')}L${dn.join('L')}Z`, fill: lutRgb(m.cmap, 0.7), 'fill-opacity': 0.2, stroke: 'none' }));
+  const med = []; for (let i = 0; i < n; i++) if (ok(i)) med.push(`${chartX(i)},${chartY(layer.p50[i])}`);
+  svg.appendChild(el('polyline', { points: med.join(' '), fill: 'none', stroke: lutRgb(m.cmap, 0.86), 'stroke-width': 1.6, 'stroke-linejoin': 'round', 'stroke-opacity': 0.9 }));
+  pins.forEach(p => {
+    const s = series.get(skey(layer, p)); if (!s) return;
+    let d = '', pen = false;
+    for (let i = 0; i < n; i++) { if (isFinite(s[i])) { d += `${pen ? 'L' : 'M'}${chartX(i).toFixed(1)},${chartY(s[i]).toFixed(1)}`; pen = true; } else pen = false; }
+    svg.appendChild(el('path', { d, fill: 'none', stroke: p.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    for (let i = 0; i < n; i++) if (isFinite(s[i]) && !(isFinite(s[i - 1]) || isFinite(s[i + 1]))) svg.appendChild(el('circle', { cx: chartX(i), cy: chartY(s[i]), r: 2, fill: p.color }));
+  });
+  svg.appendChild(el('line', { id: 'cur', x1: 0, x2: 0, y1: 0, y2: H, stroke: tok('--accent'), 'stroke-opacity': 0.75 }));
+  svg.appendChild(el('circle', { id: 'curdot', cx: 0, cy: 0, r: 3.5, fill: tok('--accent'), stroke: tok('--space-0'), 'stroke-width': 1.5 }));
+  const what = isNet() ? 'river cells' : 'area-weighted, wet cells';
+  $('chart-cap').textContent = `${layer.species} in ${layer.compartment_label.toLowerCase()}: median and 10–90 % range (${what})${pins.length ? ', probes' : ''}, ${isLogL() ? 'log scale' : 'linear'}${hovOn ? ' · above: mean of each 1° latitude band' : ''}`;
+  markChart(); hovCursor();
+}
+function markChart() {
+  const c = $('cur'), d = $('curdot'); if (!c || !chartX || !layer || !shown) return;
+  const f = shown.a + shown.m, x = chartX(f);
+  c.setAttribute('x1', x); c.setAttribute('x2', x);
+  const a = layer.p50[shown.a], b = layer.p50[shown.b];
+  const v = a !== null && b !== null ? a + (b - a) * shown.m : (shown.m < 0.5 ? a : b);
+  if (v !== null && v !== undefined) { d.setAttribute('cx', x); d.setAttribute('cy', chartY(v)); d.removeAttribute('visibility'); } else d.setAttribute('visibility', 'hidden');
+}
+function placeMonths() {
+  const box = $('months'), n = man.dates.length, W = box.getBoundingClientRect().width;
+  const x = i => PAD + (n > 1 ? i / (n - 1) : 0.5) * (W - 2 * PAD);
+  box.innerHTML = '';
+  let prev = -1, last = -1e9;
+  man.dates.forEach((s, i) => {
+    const d = new Date(isoMs(s)), mo = d.getUTCMonth();
+    const lab = n <= 14 ? `${d.getUTCDate()} ${MS[mo]}` : (mo !== prev ? MS[mo] : '');
+    prev = mo;
+    if (!lab || x(i) - last < 30) return;
+    const sp = document.createElement('span'); sp.style.left = `${x(i)}px`; sp.textContent = lab; sp.dataset.i = i; box.appendChild(sp); last = x(i);
+  });
+}
+
+// ---------- probes ----------
+let pins = [], pinSeq = 0;
+const series = new Map();
+const skey = (L, p) => `${lkey(L)}|${p.id}`;
+function pinTarget(L, p) {         // index into the layer's code images, or -1
+  if (L.kind === 'network') {
+    if (p.k >= 0) return p.k;
+    const k = nearestRiver(p.lat, p.lon, 25, -1); return k;
+  }
+  const x = Math.min(L.width - 1, Math.floor((p.lon + 180) / 360 * L.width)), y = Math.min(L.height - 1, Math.floor((90 - p.lat) / 180 * L.height));
+  return y * L.width + x;
+}
+function addPinAt(cx, cy) {
+  if (!man || !layer) return;
+  const hit = pickSurface(cx, cy); if (!hit) return;
+  let [lat, lon] = latLonOf(hit), k = -1;
+  if (NET && (isNet() || $('rivers').checked)) {     // snap to the nearest drawn river cell: selects that river
+    k = nearestRiver(lat, lon, Math.max(3, kmPerPx() * (isNet() ? 12 : 7)), riverU.uMinUpa.value - 0.12);
+    if (k < 0 && isNet()) { flash('Click on a river to select it'); return; }
+    if (k >= 0) { lat = NET.lat[k]; lon = NET.lon[k]; }
+  }
+  const used = new Set(pins.map(p => p.slot));
+  let slot = [0, 1, 2].find(s => !used.has(s));
+  if (slot === undefined) { slot = pins[0].slot; pins.shift(); }
+  const pin = { id: ++pinSeq, slot, color: PIN_COLORS[slot], letter: PIN_LETTERS[slot], lat, lon, k };
+  pins.push(pin);
+  if (k >= 0) { profSel = pin.id; profHidden = false; }
+  pinsChanged();
+}
+let statusTimer = null;
+function pinsChanged() {
+  const box = $('pins'); box.innerHTML = '';
+  for (const p of pins) { const d = document.createElement('div'); d.className = 'pin'; d.style.background = p.color; d.textContent = p.letter; p.el = d; box.appendChild(d); }
+  $('pin-hint').hidden = pins.length > 0;
+  updateHighlights(); computeSeries(); updatePinValues(); drawChart(); drawProfile();
+}
+function updateHighlights() {
+  if (!NET) return;
+  const hi = NET.hiAttr.array; hi.fill(0);
+  const ups = riverU.uUp.value;
+  ups.forEach(v => v.set(-1, -1, 0));
+  const drawn = isNet() || $('rivers').checked;
+  for (const p of pins) {
+    if (p.k < 0 || !drawn) continue;
+    ups[p.slot].set(p.k, p.k + NET.size[p.k], 1);
+    for (let j = NET.down[p.k]; j >= 0; j = NET.down[j]) hi[j] = p.slot + 1;
+    if (p.slot === profSlot()) { hi[p.k] = p.slot + 1; for (let j = p.k; j + 1 < NET.n && NET.down[j + 1] === j; j++) hi[j + 1] = p.slot + 1; }
+  }
+  NET.hiAttr.needsUpdate = true;
+}
+let seriesJob = 0;
+async function computeSeries() {
+  if (!layer || !pins.length) return;
+  const L = layer, job = ++seriesJob, n = man.dates.length, P = L.per_file || 3;
+  const need = pins.filter(p => !series.has(skey(L, p)));
+  if (!need.length) return;
+  const tg = need.map(p => ({ p, idx: pinTarget(L, p), out: new Float32Array(n).fill(NaN) }));
+  for (const t of tg) if (t.p.k >= 0 && NET) {
+    // main stem: range of every cell over all outputs (profile band)
+    t.path = Int32Array.from(pathOf(t.p), j => cellIdx(L, j)); t.lo = new Uint8Array(t.path.length).fill(255); t.hi = new Uint8Array(t.path.length);
+    // upstream network: every mapped river cell draining to the probe (raster layers: the distinct pixels under them)
+    const k = t.p.k, s = NET.size[k];
+    let bi = new Int32Array(s); for (let i = 0; i < s; i++) bi[i] = cellIdx(L, k + i);
+    if (L.kind !== 'network') bi = Int32Array.from(new Set(bi));
+    t.bidx = bi; t.b = { p10: new Float32Array(n).fill(NaN), p50: new Float32Array(n).fill(NaN), p90: new Float32Array(n).fill(NaN), nb: bi.length };
+  }
+  const hist = new Uint32Array(256);
+  const qcode = (tot, f) => { let c = 0; for (let q = 1; q <= 254; q++) { c += hist[q]; if (c >= f * tot) return q; } return 254; };
+  for (let fi = 0; fi < L.files.length; fi++) {
+    const e = fileCache.get(L.files[fi]);
+    const r = e && e.arr ? e : await loadCodes(L.files[fi]).catch(() => null);
+    if (job !== seriesJob || layer !== L) return;
+    if (!r) continue;
+    for (const t of tg) {
+      if (t.idx < 0) continue;
+      for (let c = 0; c < P; c++) {
+        const ti = fi * P + c; if (ti >= n) break;
+        const code = r.arr[t.idx * 4 + c];
+        t.out[ti] = code >= 1 && code <= 254 ? decL(L, code) : NaN;
+        if (t.path) for (let q = 0; q < t.path.length; q++) {
+          const cq = r.arr[t.path[q] * 4 + c];
+          if (cq >= 1 && cq <= 254) { if (cq < t.lo[q]) t.lo[q] = cq; if (cq > t.hi[q]) t.hi[q] = cq; }
+        }
+        if (t.bidx) {
+          hist.fill(0);
+          for (let i = 0; i < t.bidx.length; i++) hist[r.arr[t.bidx[i] * 4 + c]]++;
+          let tot = 0; for (let q = 1; q <= 254; q++) tot += hist[q];
+          if (tot) { t.b.p10[ti] = decL(L, qcode(tot, 0.1)); t.b.p50[ti] = decL(L, qcode(tot, 0.5)); t.b.p90[ti] = decL(L, qcode(tot, 0.9)); }
+        }
+      }
+    }
+  }
+  for (const t of tg) {
+    series.set(skey(L, t.p), t.out);
+    if (t.path) { envs.set(skey(L, t.p), { lo: t.lo, hi: t.hi }); bstats.set(skey(L, t.p), t.b); }
+  }
+  drawChart(); updatePinValues(); drawProfile();
+}
+const envs = new Map();
+function pathOf(p) {
+  if (!p.path) { p.path = mainStem(p.k); const h0 = NET.dist[p.path[0]]; p.px = Float32Array.from(p.path, j => h0 - NET.dist[j]); p.pi = p.path.indexOf(p.k); }
+  return p.path;
+}
+function valueAt(L, idx, e, ch) { const c = e.arr[idx * 4 + ch]; return c; }
+function frameCodes(idx) {            // codes of the two outputs around the date shown, for one cell / pixel
+  if (!shown || idx < 0) return null;
+  const P = layer.per_file || 3;
+  if (!shown.ea.arr || !shown.eb.arr) return null;
+  return [shown.ea.arr[idx * 4 + shown.a % P], shown.eb.arr[idx * 4 + shown.b % P]];
+}
+function interpCodes(cs) {
+  if (!cs) return { st: 'none' };
+  const [c1, c2] = cs, m = shown.m, ok = c => c >= 1 && c <= 254;
+  if (c1 === 0 && c2 === 0) return { st: 'none' };
+  if (ok(c1) && ok(c2)) return { st: 'ok', v: decL(layer, c1) + (decL(layer, c2) - decL(layer, c1)) * m, lo: c1 === 1 && c2 === 1, hi: c1 === 254 && c2 === 254 };
+  const c = m < 0.5 ? c1 : c2;
+  return ok(c) ? { st: 'ok', v: decL(layer, c), lo: c === 1, hi: c === 254 } : (c === 0 ? { st: 'none' } : { st: 'dry' });
+}
+function refAt(idx) { const e = refEntry; if (!e || !e.arr || idx < 0) return null; const c = e.arr[idx * 4]; return c >= 1 && c <= 254 ? decL(layer, c) : null; }
+function fmtValue(r) {
+  const v = toVal(r.v);
+  return `${r.lo ? '≤ ' : r.hi ? '≥ ' : '≈ '}${fmtSig(v, isLogL() && layer.quant_step < 0.0086 ? 3 : 2)}`;
+}
+function updatePinValues() {
+  const box = $('pinlist'); box.innerHTML = '';
+  for (const p of pins) {
+    const row = document.createElement('div'); row.className = 'pinrow';
+    let val = '–', extra = '';
+    if (layer && shown) {
+      const idx = pinTarget(layer, p), r = interpCodes(frameCodes(idx));
+      if (r.st === 'ok') val = `<span class="pv">${fmtValue(r)}</span> ${layer.units}`;
+      else if (r.st === 'dry') val = 'no value';
+      else val = isNet() ? 'no river here' : 'outside the model';
+      if (ui.mode === 'departure' && r.st === 'ok') { const rf = refAt(idx); if (rf !== null) extra = ` · ${isLogL() ? ratioLabel(r.v - rf) : fmtSig(toVal(r.v) - toVal(rf))}`; }
+    }
+    const where = p.k >= 0 && NET ? ` · ${fmtKm2(10 ** NET.upa[p.k])}` : '';
+    row.innerHTML = `<span class="dot" style="background:${p.color}">${p.letter}</span><span>${fmtLat(p.lat)} ${fmtLon(p.lon)}${where}<br>${val}${extra}</span><button type="button" aria-label="Remove probe ${p.letter}">×</button>`;
+    row.querySelector('button').addEventListener('click', ev => { ev.stopPropagation(); pins = pins.filter(q => q !== p); pinsChanged(); });
+    if (p.k >= 0) { row.style.cursor = 'pointer'; row.title = 'Show this probe\'s river profile'; row.addEventListener('click', () => { profSel = p.id; profHidden = false; updateHighlights(); drawProfile(); }); }
+    box.appendChild(row);
+  }
+  updateTourFacts();
+}
+function updatePinMarkers() {
+  if (!pins.length) return;
+  const r = canvas.getBoundingClientRect(), camDir = viewCam.position;
+  for (const p of pins) {
+    const v = dirFromLatLon(p.lat, p.lon), sr = surfR(p.lat, p.lon);
+    const vis = v.dot(camDir) > sr;
+    p.el.style.display = vis ? '' : 'none';
+    if (!vis) continue;
+    v.multiplyScalar(sr + 0.0008).project(viewCam);
+    p.el.style.left = `${(v.x + 1) / 2 * r.width + r.left}px`; p.el.style.top = `${(1 - v.y) / 2 * r.height + r.top}px`;
+  }
+}
+
+// ---------- river profile: the main stem through a river probe, head of the mapped network -> outlet ----------
+let profSel = null, profHidden = false, profHover = -1, profGeom = null;
+function profPin() {
+  if (!NET) return null;
+  const rp = pins.filter(p => p.k >= 0);
+  return rp.find(p => p.id === profSel) || rp[rp.length - 1] || null;
+}
+function profSlot() { const p = profPin(); return p ? p.slot : -1; }
+const SUP = { '-': '⁻', 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
+const sup = e => String(e).split('').map(c => SUP[c] ?? c).join('');
+const clamp01 = t => Math.max(0, Math.min(1, t));
+function valueColour(v, idx) {        // the map's own colour for a value (departure: against the reference)
+  const m = cur();
+  if (ui.mode === 'departure') { const rf = refAt(idx); return rf === null ? 'rgb(105,112,120)' : lutRgb(m.cmapDiv, clamp01(0.5 + 0.5 * (v - rf) / m.anom)); }
+  return lutRgb(m.cmap, clamp01(colT(v)));
+}
+// index of a river cell in a layer's code images: the cell itself (rivers) or the map pixel under it
+function cellIdx(L, j) {
+  if (L.kind === 'network') return j;
+  const x = Math.min(L.width - 1, Math.floor((NET.lon[j] + 180) / 360 * L.width)), y = Math.min(L.height - 1, Math.floor((90 - NET.lat[j]) / 180 * L.height));
+  return y * L.width + x;
+}
+let profTab = 'profile';
+const bstats = new Map();
+function drawProfile() {
+  const card = $('prof'), p = profPin();
+  const show = !!(p && layer && !profHidden);
+  card.hidden = !show;
+  riverU.uFocus.value = show && (isNet() || $('rivers').checked) ? 1 : 0;
+  if (!show) { profGeom = null; profHover = -1; return; }
+  pathOf(p);
+  $('prof-dot').style.background = p.color; $('prof-dot').textContent = p.letter;
+  $('prof-title').textContent = `River at ${fmtLat(p.lat)} ${fmtLon(p.lon)} · ${fmtKm2(10 ** NET.upa[p.k])} upstream`;
+  const [ctx, w, h, dpr] = sizeCanvas($('profcv'));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+  ctx.font = `10px ${tok('--font-data')}`;
+  const W = w / dpr, H = h / dpr;
+  if (profTab === 'time') drawBasinTime(ctx, W, H, p);
+  else if (profTab === 'area') drawBasinArea(ctx, W, H, p);
+  else drawMainStem(ctx, W, H, p);
+}
+function yAxis(ctx, Y, y0, y1, x0, x1, top, bottom) {
+  ctx.textBaseline = 'middle';
+  for (const v of niceTicks(toVal(y0), toVal(y1), isLogL())) {
+    const y = Y(isLogL() ? Math.log10(v) : v); if (y < top - 1 || y > bottom + 1) continue;
+    ctx.fillStyle = 'rgba(232,237,242,0.08)'; ctx.fillRect(x0, Math.round(y), x1 - x0, 1);
+    ctx.fillStyle = tok('--muted'); ctx.textAlign = 'right'; ctx.fillText(fmtTick(v), x0 - 4, y);
+  }
+}
+function noData(ctx, W, H, msg) { ctx.fillStyle = tok('--muted'); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(msg, W / 2, H / 2); profGeom = null; }
+function drawBasinTime(ctx, W, H, p) {        // the probe cell and its upstream network, every output
+  const L = layer, n = man.dates.length, s = series.get(skey(L, p)), b = bstats.get(skey(L, p));
+  const ml = 38, mr = 10, mt = 8, mb = 18, foot = $('prof-foot');
+  const what = L.kind === 'network' ? 'mapped river cells' : 'map pixels under the mapped river cells';
+  let y0 = Infinity, y1 = -Infinity;
+  const acc = v => { if (isFinite(v)) { if (v < y0) y0 = v; if (v > y1) y1 = v; } };
+  if (b) for (let i = 0; i < n; i++) { acc(b.p10[i]); acc(b.p90[i]); }
+  if (s) s.forEach(acc);
+  if (!isFinite(y0)) { noData(ctx, W, H, s || b ? 'No values for this river' : 'Reading every output…'); foot.textContent = ''; return; }
+  if (y1 - y0 < L.quant_step * 8) { const c = (y0 + y1) / 2; y0 = c - L.quant_step * 4; y1 = c + L.quant_step * 4; }
+  const pad = (y1 - y0) * 0.08; y0 -= pad; y1 += pad;
+  const X = i => ml + (n > 1 ? i / (n - 1) : 0.5) * (W - ml - mr), Y = v => mt + (1 - (v - y0) / (y1 - y0)) * (H - mt - mb);
+  yAxis(ctx, Y, y0, y1, ml, W - mr, mt, H - mb);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillStyle = tok('--muted');
+  let prev = -1, lastX = -1e9;
+  man.dates.forEach((d, i) => { const mo = new Date(isoMs(d)).getUTCMonth(); if (mo !== prev && X(i) - lastX > 26) { ctx.fillText(MS[mo], X(i), H - mb + 4); lastX = X(i); } prev = mo; });
+  const line = (arr, i0) => { let pen = false; ctx.beginPath(); for (let i = 0; i < n; i++) { if (isFinite(arr[i])) { pen ? ctx.lineTo(X(i), Y(arr[i])) : ctx.moveTo(X(i), Y(arr[i])); pen = true; } else pen = false; } };
+  if (b) {
+    ctx.fillStyle = 'rgba(232,237,242,0.12)';
+    for (let i = 0; i + 1 < n; i++) {
+      if (!isFinite(b.p10[i]) || !isFinite(b.p10[i + 1])) continue;
+      ctx.beginPath(); ctx.moveTo(X(i), Y(b.p90[i])); ctx.lineTo(X(i + 1), Y(b.p90[i + 1])); ctx.lineTo(X(i + 1), Y(b.p10[i + 1])); ctx.lineTo(X(i), Y(b.p10[i])); ctx.closePath(); ctx.fill();
+    }
+    ctx.strokeStyle = 'rgba(232,237,242,0.78)'; ctx.lineWidth = 1.4; ctx.setLineDash([4, 3]); line(b.p50); ctx.stroke(); ctx.setLineDash([]);
+  }
+  if (s) { ctx.strokeStyle = p.color; ctx.lineWidth = 2.2; ctx.lineJoin = 'round'; line(s); ctx.stroke(); }
+  if (shown) { ctx.fillStyle = tok('--accent'); ctx.fillRect(Math.round(X(shown.a + shown.m)), mt, 1.5, H - mt - mb); }
+  const hv = profHover >= 0 && profHover < n ? profHover : -1;
+  if (hv >= 0) {
+    ctx.fillStyle = 'rgba(232,237,242,0.7)'; ctx.fillRect(Math.round(X(hv)), mt, 1, H - mt - mb);
+    if (s && isFinite(s[hv])) { ctx.beginPath(); ctx.arc(X(hv), Y(s[hv]), 3.5, 0, 7); ctx.fillStyle = p.color; ctx.fill(); }
+    const f = v => (isFinite(v) ? fmtSig(toVal(v), 2) : '–');
+    foot.textContent = `${fmtDate(isoMs(man.dates[hv]))}: this cell ${f(s ? s[hv] : NaN)} · upstream median ${f(b ? b.p50[hv] : NaN)} (10–90 %: ${f(b ? b.p10[hv] : NaN)}–${f(b ? b.p90[hv] : NaN)}) ${L.units}`;
+  } else foot.textContent = `Solid: this cell · dashed: median of the ${b ? b.nb.toLocaleString('en-US') : '…'} ${what} upstream · band: their 10–90 %`;
+  profGeom = { kind: 'time', n, ml, mr, W };
+}
+function drawBasinArea(ctx, W, H, p) {        // every mapped river cell upstream: value against upstream area, date shown
+  const L = layer, k = p.k, s = NET.size[k], st = Math.max(1, Math.floor(s / 25000)), m = cur();
+  const ml = 38, mr = 10, mt = 8, mb = 18, foot = $('prof-foot');
+  const xs = [], ys = [], ix = [];
+  if (shown && shown.ea.arr && shown.eb.arr) for (let j = k; j < k + s; j += st) { const c = cellIdx(L, j), r = interpCodes(frameCodes(c)); if (r.st === 'ok') { xs.push(NET.upa[j]); ys.push(r.v); ix.push(c); } }
+  if (!xs.length) { noData(ctx, W, H, shown ? 'No values upstream on this date' : 'Loading…'); foot.textContent = ''; return; }
+  let y0 = Math.min(m.range[0], ...ys), y1 = Math.max(m.range[1], ...ys);
+  const pad = (y1 - y0) * 0.06; y0 -= pad; y1 += pad;
+  const u0 = Math.log10(man.network.min_km2) - 0.05, u1 = NET.upa[k] + 0.08;
+  const X = u => ml + (u - u0) / (u1 - u0) * (W - ml - mr), Y = v => mt + (1 - (v - y0) / (y1 - y0)) * (H - mt - mb);
+  yAxis(ctx, Y, y0, y1, ml, W - mr, mt, H - mb);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillStyle = tok('--muted');
+  for (let e = Math.ceil(u0); e <= Math.floor(u1); e++) { ctx.fillStyle = 'rgba(232,237,242,0.06)'; ctx.fillRect(Math.round(X(e)), mt, 1, H - mt - mb); ctx.fillStyle = tok('--muted'); ctx.fillText(`10${sup(e)} km²`, X(e), H - mb + 4); }
+  for (let i = 0; i < xs.length; i++) { ctx.fillStyle = valueColour(ys[i], ix[i]); ctx.fillRect(X(xs[i]) - 1.1, Y(ys[i]) - 1.1, 2.2, 2.2); }
+  // main stem through the probe, upstream of it
+  ctx.strokeStyle = 'rgba(232,237,242,0.7)'; ctx.lineWidth = 1.2; ctx.beginPath(); let pen = false;
+  for (let q = 0; q <= p.pi; q++) { const j = p.path[q], r = interpCodes(frameCodes(cellIdx(L, j))); if (r.st === 'ok') { pen ? ctx.lineTo(X(NET.upa[j]), Y(r.v)) : ctx.moveTo(X(NET.upa[j]), Y(r.v)); pen = true; } else pen = false; }
+  ctx.stroke();
+  const r0 = interpCodes(frameCodes(cellIdx(L, k)));
+  if (r0.st === 'ok') { ctx.beginPath(); ctx.arc(X(NET.upa[k]), Y(r0.v), 4.5, 0, 7); ctx.fillStyle = p.color; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = tok('--space-0'); ctx.stroke(); }
+  const what = L.kind === 'network' ? 'a mapped river cell' : 'the map pixel under a mapped river cell';
+  foot.textContent = `Date shown · each dot: ${what} upstream (${xs.length.toLocaleString('en-US')}${st > 1 ? `, every ${st}th` : ''}) · line: main stem · x: its upstream area`;
+  profGeom = null;
+}
+function drawMainStem(ctx, W, H, p) {
+  const path = p.path, px = p.px, L = layer, n = path.length, len = px[n - 1] || 1;
+  const ml = 38, mr = 50, mt = 8, mb = 18;
+  const X = x => ml + x / len * (W - ml - mr);
+  const cv = new Float32Array(n).fill(NaN);
+  if (shown && shown.ea.arr && shown.eb.arr) for (let q = 0; q < n; q++) { const r = interpCodes(frameCodes(cellIdx(L, path[q]))); if (r.st === 'ok') cv[q] = r.v; }
+  const env = envs.get(skey(L, p));
+  let y0 = Infinity, y1 = -Infinity;
+  const acc = v => { if (isFinite(v)) { if (v < y0) y0 = v; if (v > y1) y1 = v; } };
+  if (env) for (let q = 0; q < n; q++) if (env.lo[q] <= 254) { acc(decL(L, env.lo[q])); acc(decL(L, env.hi[q])); }
+  cv.forEach(acc);
+  if (!isFinite(y0)) { y0 = cur().range[0]; y1 = cur().range[1]; }
+  if (y1 - y0 < L.quant_step * 8) { const c = (y0 + y1) / 2; y0 = c - L.quant_step * 4; y1 = c + L.quant_step * 4; }
+  const pad = (y1 - y0) * 0.08; y0 -= pad; y1 += pad;
+  const Y = v => mt + (1 - (v - y0) / (y1 - y0)) * (H - mt - mb);
+  // upstream area along the river (right axis, log km²): steps up at every confluence
+  const u0 = Math.log10(man.network.min_km2), u1 = Math.max(u0 + 0.5, NET.upa[path[n - 1]] + 0.05);
+  const YA = u => mt + (1 - (u - u0) / (u1 - u0)) * (H - mt - mb);
+  ctx.beginPath(); ctx.moveTo(X(0), H - mb);
+  for (let q = 0; q < n; q++) ctx.lineTo(X(px[q]), YA(NET.upa[path[q]]));
+  ctx.lineTo(X(len), H - mb); ctx.closePath();
+  ctx.fillStyle = 'rgba(232,237,242,0.055)'; ctx.fill();
+  ctx.font = `10px ${tok('--font-data')}`; ctx.textBaseline = 'middle';
+  for (const v of niceTicks(toVal(y0), toVal(y1), isLogL())) {
+    const y = Y(isLogL() ? Math.log10(v) : v); if (y < mt - 1 || y > H - mb + 1) continue;
+    ctx.fillStyle = 'rgba(232,237,242,0.08)'; ctx.fillRect(ml, Math.round(y), W - ml - mr, 1);
+    ctx.fillStyle = tok('--muted'); ctx.textAlign = 'right'; ctx.fillText(fmtTick(v), ml - 4, y);
+  }
+  ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(232,237,242,0.4)';
+  for (let e = Math.ceil(u0); e <= Math.floor(u1); e++) ctx.fillText(`10${sup(e)} km²`, W - mr + 5, YA(e));
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillStyle = tok('--muted');
+  let lastX = -1e9;
+  for (const v of niceTicks(1e-9, len, false)) { const x = X(v); if (x - lastX < 46 || x > W - mr + 2) continue; ctx.fillText(v === 0 ? '0' : `${v.toLocaleString('en-US')}${x > W - mr - 60 ? ' km' : ''}`, x, H - mb + 4); lastX = x; }
+  // range over all outputs at every cell
+  if (env) {
+    ctx.fillStyle = 'rgba(232,237,242,0.13)';
+    for (let q = 0; q < n; q++) {
+      if (env.lo[q] > 254) continue;
+      const xa = X(px[q]), xb = q + 1 < n ? X(px[q + 1]) : xa + 1, ya = Y(decL(L, env.hi[q])), yb = Y(decL(L, env.lo[q]));
+      ctx.fillRect(xa, ya, Math.max(0.8, xb - xa + 0.4), Math.max(1, yb - ya));
+    }
+  }
+  // the date shown, coloured by the map's colour scale
+  ctx.lineWidth = 2.2; ctx.lineCap = 'round';
+  for (let q = 0; q + 1 < n; q++) {
+    if (!isFinite(cv[q]) || !isFinite(cv[q + 1])) continue;
+    ctx.strokeStyle = valueColour(0.5 * (cv[q] + cv[q + 1]), cellIdx(L, path[q]));
+    ctx.beginPath(); ctx.moveTo(X(px[q]), Y(cv[q])); ctx.lineTo(X(px[q + 1]), Y(cv[q + 1])); ctx.stroke();
+  }
+  const xp = X(px[p.pi]);
+  ctx.strokeStyle = p.color; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.moveTo(xp, mt); ctx.lineTo(xp, H - mb); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = tok('--faint'); ctx.textBaseline = 'top';
+  ctx.textAlign = 'left'; if (xp - X(0) > 60) ctx.fillText('head', X(0) + 2, mt);
+  ctx.textAlign = 'right'; if (X(len) - xp > 60) ctx.fillText(NET.down[path[n - 1]] < 0 ? 'outlet' : '', X(len) - 2, mt);
+  if (profHover >= 0 && profHover < n) {
+    const x = X(px[profHover]);
+    ctx.fillStyle = 'rgba(232,237,242,0.7)'; ctx.fillRect(Math.round(x), mt, 1, H - mt - mb);
+    if (isFinite(cv[profHover])) { ctx.beginPath(); ctx.arc(x, Y(cv[profHover]), 3.5, 0, 7); ctx.fillStyle = tok('--fg'); ctx.fill(); }
+  }
+  profGeom = { kind: 'profile', X, len, path, px, cv, ml, mr, W };
+  const foot = $('prof-foot');
+  const where = L.kind === 'network' ? '' : ' (map pixels under the river)';
+  if (profHover >= 0 && profHover < n) {
+    const j = path[profHover], v = cv[profHover];
+    foot.textContent = `${Math.round(px[profHover]).toLocaleString('en-US')} km from the head · ${fmtKm2(10 ** NET.upa[j])} upstream · ${isFinite(v) ? `${fmtSig(toVal(v), 2)} ${L.units}` : 'no value'}`;
+  } else foot.textContent = `Main stem${where}, head → outlet ${Math.round(len).toLocaleString('en-US')} km · line: date shown · band: range over the ${man.dates.length} outputs · grey: upstream area`;
+}
+$('prof-x').addEventListener('click', () => { profHidden = true; drawProfile(); updateHighlights(); });
+$('prof-fit').addEventListener('click', () => { const p = profPin(); if (!p) return; const f = frameBasin(p.k); flyTo(f.dir, f.dist, 2.6); userTook(); });
+$('profcv').addEventListener('pointermove', e => {
+  if (!profGeom) return;
+  const r = $('profcv').getBoundingClientRect(), g = profGeom;
+  if (g.kind === 'time') {
+    const i = Math.round((e.clientX - r.left - g.ml) / (g.W - g.ml - g.mr) * (g.n - 1));
+    profHover = Math.max(0, Math.min(g.n - 1, i)); drawProfile(); return;
+  }
+  const x = (e.clientX - r.left - g.ml) / (g.W - g.ml - g.mr) * g.len;
+  let lo = 0, hi = g.px.length - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (g.px[mid] < x) lo = mid; else hi = mid; }
+  profHover = Math.abs(g.px[lo] - x) < Math.abs(g.px[hi] - x) ? lo : hi;
+  drawProfile();
+});
+$('profcv').addEventListener('pointerleave', () => { profHover = -1; drawProfile(); });
+$('profcv').addEventListener('click', () => {
+  if (!profGeom || profHover < 0) return;
+  if (profGeom.kind === 'time') { play(false); tf = profHover; return; }
+  const k = profGeom.path[profHover];
+  dirTarget = new THREE.Vector3().fromArray(NET.dir, 3 * k); endFlight(); userTook(); stopSpin();
+});
+function updatePmark() {
+  const el = $('pmark');
+  if (!profGeom || profGeom.kind !== 'profile' || profHover < 0 || $('prof').hidden) { el.hidden = true; return; }
+  const k = profGeom.path[profHover], v = new THREE.Vector3().fromArray(NET.dir, 3 * k), sr = surfR(NET.lat[k], NET.lon[k]);
+  if (v.dot(viewCam.position) <= sr) { el.hidden = true; return; }
+  v.multiplyScalar(sr + 0.0008).project(viewCam);
+  const r = canvas.getBoundingClientRect();
+  el.hidden = false; el.style.left = `${(v.x + 1) / 2 * r.width + r.left}px`; el.style.top = `${(1 - v.y) / 2 * r.height + r.top}px`;
+}
+
+// ---------- latitude × time: the layer's band means on every output date, under the time strip ----------
+let hovOn = false;
+const hovMap = new Map();
+function hovCodes(L) {
+  const H = man.hovmoller; if (!H || !L) return null;
+  const key = lkey(L);
+  if (!hovMap.has(key)) {
+    const s = H.layers[key]; let a = null;
+    if (s) { const b = atob(s); a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); }
+    hovMap.set(key, a);
+  }
+  return hovMap.get(key);
+}
+const hovFrac = lat => (man.hovmoller.lat1 - lat) / (man.hovmoller.lat1 - man.hovmoller.lat0);
+function drawHov() {
+  if (!hovOn || !layer) return;
+  const a = hovCodes(layer), HV = man.hovmoller;
+  const [ctx, w, h, dpr] = sizeCanvas($('hov'));
+  ctx.clearRect(0, 0, w, h);
+  if (!a) return;
+  const n = man.dates.length, nb = HV.bands, m = cur(), dep = ui.mode === 'departure', L = layer;
+  let mean = null;
+  if (dep) {
+    mean = new Float32Array(nb);
+    for (let b = 0; b < nb; b++) { let s = 0, c = 0; for (let t = 0; t < n; t++) { const q = a[t * nb + b]; if (q >= 1 && q <= 254) { s += decL(L, q); c++; } } mean[b] = c ? s / c : NaN; }
+  }
+  const off = document.createElement('canvas'); off.width = n; off.height = nb;
+  const oc = off.getContext('2d'), img = oc.createImageData(n, nb), rgb = lutFor(dep ? m.cmapDiv : m.cmap).userData.rgb;
+  for (let t = 0; t < n; t++) for (let b = 0; b < nb; b++) {
+    const q = a[t * nb + b], o = ((nb - 1 - b) * n + t) * 4;
+    if (q < 1 || q > 254) continue;
+    const v = decL(L, q), tt = dep ? 0.5 + 0.5 * (v - mean[b]) / m.anom : colT(v);
+    const i = Math.round(clamp01(tt) * 255) * 4;
+    img.data[o] = rgb[i]; img.data[o + 1] = rgb[i + 1]; img.data[o + 2] = rgb[i + 2]; img.data[o + 3] = 255;
+  }
+  oc.putImageData(img, 0, 0);
+  const W = w / dpr, step = n > 1 ? (W - 2 * PAD) / (n - 1) : W - 2 * PAD;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, Math.round((PAD - step / 2) * dpr), 0, Math.round(n * step * dpr), h);
+  ctx.fillStyle = 'rgba(232,237,242,0.28)';
+  const marks = [60, 30, 0, -30].filter(l => l > HV.lat0 && l < HV.lat1);
+  for (const lat of marks) ctx.fillRect(0, Math.round(hovFrac(lat) * h), w, lat === 0 ? dpr : Math.max(1, Math.round(dpr * 0.5)));
+  $('hovlab').innerHTML = marks.map(lat => `<span style="top:${(hovFrac(lat) * 100).toFixed(2)}%">${lat === 0 ? '0°' : `${Math.abs(lat)}°${lat > 0 ? 'N' : 'S'}`}</span>`).join('');
+  hovCursor();
+}
+function hovCursor() { if (hovOn && chartX && shown) $('hovcur').style.left = `${chartX(shown.a + shown.m)}px`; }
+let hovLatShown = null;
+function hovLatMark() {
+  if (!hovOn || !man || !man.hovmoller) return;
+  const la = Math.round(latLonOf(camera.position)[0] * 4) / 4;
+  if (la === hovLatShown) return; hovLatShown = la;
+  const HV = man.hovmoller, el = $('hovlat');
+  el.hidden = la < HV.lat0 || la > HV.lat1;
+  el.style.top = `${(hovFrac(la) * 100).toFixed(2)}%`;
+}
+function setHov(on) {
+  hovOn = on && !!man.hovmoller;
+  $('hovwrap').hidden = !hovOn; $('hovbtn').setAttribute('aria-pressed', String(hovOn));
+  hovLatShown = null; drawHov(); lastCam = ''; if (layer) drawChart();
+}
+$('hovbtn').addEventListener('click', () => setHov(!hovOn));
+function scrubFrom(el, e) {
+  const r = el.getBoundingClientRect(), n = man.dates.length;
+  const f = (e.clientX - r.left - PAD) / (r.width - 2 * PAD) * (n - 1);
+  play(false); tf = Math.max(0, Math.min(n - 1, $('smootht').checked ? f : Math.round(f)));
+}
+for (const id of ['hov', 'chart']) {
+  const el = $(id);
+  el.addEventListener('pointerdown', e => { if (!man) return; el.setPointerCapture(e.pointerId); el._drag = true; scrubFrom(el, e); });
+  el.addEventListener('pointermove', e => { if (el._drag) scrubFrom(el, e); if (id === 'hov') hovHover(e); });
+  el.addEventListener('pointerup', () => { el._drag = false; });
+  el.addEventListener('pointercancel', () => { el._drag = false; });
+}
+$('hov').addEventListener('pointerleave', () => { $('hovread').hidden = true; });
+function hovHover(e) {
+  const a = hovCodes(layer); if (!a) return;
+  const HV = man.hovmoller, r = $('hov').getBoundingClientRect(), n = man.dates.length;
+  const t = Math.round((e.clientX - r.left - PAD) / (r.width - 2 * PAD) * (n - 1));
+  const lat = HV.lat1 - (e.clientY - r.top) / r.height * (HV.lat1 - HV.lat0);
+  const b = Math.floor((lat - HV.lat0) / HV.band_deg);
+  if (t < 0 || t >= n || b < 0 || b >= HV.bands) { $('hovread').hidden = true; return; }
+  const q = a[t * HV.bands + b], la0 = HV.lat0 + b * HV.band_deg;
+  $('hovread').hidden = false;
+  $('hovread').textContent = `${fmtLat(la0)} to ${fmtLat(la0 + HV.band_deg)} · ${fmtDate(isoMs(man.dates[t]))}: ${q >= 1 && q <= 254 ? `${fmtSig(toVal(decL(layer, q)), 2)} ${layer.units}` : 'no value'}`;
+}
+
+// ---------- guided tour: fly to the largest rivers; every number shown comes from this run's files ----------
+const TOUR = [                         // name, box around the mouth [W, E, S, N]: the stop is its largest-upArea cell
+  ['Amazon', [-53, -48, -2.5, 2.5]],
+  ['Mississippi', [-92, -88.5, 28.5, 31.5]],
+  ['Mackenzie', [-137.5, -132, 67.5, 69.8]],
+  ['Danube', [27.5, 30.2, 44.4, 46]],
+  ['Nile', [29.5, 32.6, 30, 31.8]],
+  ['Ganges–Brahmaputra', [88, 92.5, 21.5, 24.5]],
+  ['Yangtze', [119.5, 122.5, 30.5, 32.5]],
+  ['Murray–Darling', [138.5, 140, -36.2, -34.8]],
+  ['Guadiana', [-7.8, -7.2, 37.1, 38.3]],
+];
+const TOUR_MS = 12500;
+let tour = null;
+function findOutlet(bb) {
+  let best = -1, bu = -1;
+  const { n, lat, lon, upa } = NET;
+  for (let k = 0; k < n; k++) if (lat[k] >= bb[2] && lat[k] <= bb[3] && lon[k] >= bb[0] && lon[k] <= bb[1] && upa[k] > bu) { bu = upa[k]; best = k; }
+  return best;
+}
+function frameBasin(k) {               // camera direction and distance that fit the river's upstream network
+  const s = NET.size[k], st = Math.max(1, Math.floor(s / 6000)), c = new THREE.Vector3(), D = NET.dir;
+  for (let j = k; j < k + s; j += st) { c.x += D[3 * j]; c.y += D[3 * j + 1]; c.z += D[3 * j + 2]; }
+  c.normalize();
+  let cmin = 1;
+  for (let j = k; j < k + s; j += st) cmin = Math.min(cmin, c.x * D[3 * j] + c.y * D[3 * j + 1] + c.z * D[3 * j + 2]);
+  const th = Math.acos(Math.max(-1, Math.min(1, cmin)));
+  const aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
+  const fh = Math.atan(Math.tan(FOV2) * Math.min(1, aspect)) * 0.78;
+  const tm = Math.min(1.25, th * 1.35 + 0.04);
+  const dist = Math.min(homeDist, Math.max(1 + minAlt() + 0.05, Math.cos(tm) + Math.sin(tm) / Math.tan(fh)));
+  // the cards and the time strip sit at the bottom: aim a little south so the basin shows above them
+  const dr = dockEl.getBoundingClientRect().height + ($('prof').hidden && $('tourcard').hidden ? 0 : 240);
+  const shift = matchMedia('(max-width: 720px)').matches ? -0.12 : Math.min(0.45, dr / Math.max(1, canvas.clientHeight) * 0.55);
+  const nrt = new THREE.Vector3(0, 1, 0).addScaledVector(c, -c.y);
+  if (nrt.lengthSq() > 1e-8) { nrt.normalize(); const dl = shift * surfaceSpan(dist); c.multiplyScalar(Math.cos(dl)).addScaledVector(nrt, -Math.sin(dl)).normalize(); }
+  return { dir: c, dist };
+}
+function startTour() {
+  if (!NET || !man.compartments.includes('CHANNEL')) { flash('The tour needs the river network'); return; }
+  tour = { i: -1, paused: false, timer: null, stop: null, present: document.body.classList.contains('present'), hov: hovOn };
+  document.body.classList.add('touring'); $('tourbtn').setAttribute('aria-pressed', 'true');
+  setPresent(true); setHov(false);
+  if (comp !== 'CHANNEL') setComp('CHANNEL');
+  if (ui.mode !== 'value') setMode('value');
+  $('tc-pause').textContent = 'Pause';
+  $('tourcard').hidden = false;
+  play(true);
+  tourGo(0);
+}
+function tourGo(i) {
+  if (!tour) return;
+  clearTimeout(tour.timer);
+  const N = TOUR.length; i = ((i % N) + N) % N; tour.i = i;
+  const [name, bb] = TOUR[i], k = findOutlet(bb);
+  if (k < 0) { tour.timer = setTimeout(() => tourGo(i + 1), 30); return; }
+  pins = [{ id: ++pinSeq, slot: 0, color: PIN_COLORS[0], letter: 'A', lat: NET.lat[k], lon: NET.lon[k], k }];
+  profSel = pins[0].id; profHidden = false;
+  tour.stop = { name, k };
+  $('tc-step').textContent = `Tour · ${i + 1} of ${N}`;
+  $('tc-name').textContent = name;
+  pinsChanged();
+  const f = frameBasin(k); flyTo(f.dir, f.dist);
+  if (!tour.paused) tour.timer = setTimeout(() => tourGo(i + 1), TOUR_MS);
+}
+function updateTourFacts() {
+  if (!tour || !tour.stop || !layer || !NET) return;
+  const p = pins.find(q => q.k === tour.stop.k); if (!p) return;
+  const k = p.k, path = pathOf(p), len = p.px[path.length - 1] - p.px[p.pi];
+  const head = p.px[p.pi];
+  const rows = [
+    `<div>Largest upstream area near the mouth: <b>${fmtKm2(10 ** NET.upa[k])}</b> in LISFLOOD's network, at ${fmtLat(NET.lat[k])} ${fmtLon(NET.lon[k])}</div>`,
+    `<div>Main stem (larger branch at every confluence) from where it first drains ${man.network.min_km2.toLocaleString('en-US')} km²: <b>${Math.round(head).toLocaleString('en-US')} km</b>${len > 1 ? `, then ${Math.round(len)} km to the outlet` : ''}</div>`];
+  if (isNet() && shown) {
+    const r = interpCodes(frameCodes(k));
+    const s = series.get(skey(layer, p));
+    let rng = '';
+    if (s) { let a = Infinity, b = -Infinity; for (const v of s) if (isFinite(v)) { a = Math.min(a, v); b = Math.max(b, v); } if (isFinite(a)) rng = ` · over the ${man.dates.length} outputs <b>${fmtSig(toVal(a), 2)}–${fmtSig(toVal(b), 2)}</b> ${layer.units}`; }
+    rows.push(`<div>${layer.species} at this cell, ${fmtDate(frameDateMs(shown.a + shown.m))}: <b>${r.st === 'ok' ? `${fmtValue(r)} ${layer.units}` : 'no value'}</b>${rng}</div>`);
+  }
+  $('tc-facts').innerHTML = rows.join('');
+}
+function endTour() {
+  if (!tour) return;
+  clearTimeout(tour.timer);
+  const keepPresent = tour.present, keepHov = tour.hov; tour = null;
+  document.body.classList.remove('touring'); $('tourbtn').setAttribute('aria-pressed', 'false'); $('tourcard').hidden = true;
+  setPresent(keepPresent); setHov(keepHov);
+}
+function userTook() { if (tour && !tour.paused) { tour.paused = true; clearTimeout(tour.timer); $('tc-pause').textContent = 'Resume'; } }
+$('tourbtn').addEventListener('click', () => (tour ? endTour() : startTour()));
+$('tc-end').addEventListener('click', endTour);
+$('tc-next').addEventListener('click', () => tour && tourGo(tour.i + 1));
+$('tc-prev').addEventListener('click', () => tour && tourGo(tour.i - 1));
+$('tc-pause').addEventListener('click', () => {
+  if (!tour) return;
+  tour.paused = !tour.paused; $('tc-pause').textContent = tour.paused ? 'Resume' : 'Pause';
+  clearTimeout(tour.timer); if (!tour.paused) tour.timer = setTimeout(() => tourGo(tour.i + 1), 4000);
+});
+
+// ---------- presentation mode, full screen, terrain ----------
+function setPresent(on) {
+  document.body.classList.toggle('present', on); $('presbtn').setAttribute('aria-pressed', String(on));
+  lastCam = ''; if (layer) { drawLegend(); drawHist(); }
+}
+$('presbtn').addEventListener('click', () => setPresent(!document.body.classList.contains('present')));
+if (!document.fullscreenEnabled) $('fsbtn').hidden = true;
+$('fsbtn').addEventListener('click', () => {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else document.documentElement.requestFullscreen().catch(() => flash('Full screen is not available here'));
+});
+document.addEventListener('fullscreenchange', () => $('fsbtn').setAttribute('aria-pressed', String(!!document.fullscreenElement)));
+function flash(msg) { statusEl.hidden = false; statusEl.textContent = msg; clearTimeout(statusTimer); statusTimer = setTimeout(() => (statusEl.hidden = true), 2400); }
+function setTerrain(ex) {
+  ui.exag = ex;
+  $('terrain-out').textContent = ex ? `×${ex}` : 'flat';
+  const on = !!(TER && ex > 0);
+  if (on && !GEO_HI) GEO_HI = new THREE.SphereGeometry(1, TER.nx / TER.stride, TER.ny / TER.stride);
+  globe.geometry = on ? GEO_HI : GEO_LO;
+  globeU.uSeg.value.set(on ? TER.nx / TER.stride : 384, on ? TER.ny / TER.stride : 192);
+  globeU.uStride.value = on ? TER.stride : 1;
+  const s = on ? ex / (EARTH_KM * 1000) : 0;
+  globeU.uExag.value = s; riverU.uExag.value = s;
+  controls.minDistance = 1 + minAlt();
+  if (camera.position.length() < 1 + minAlt()) zoomTarget = 1 + minAlt();
+  lastCam = ''; if (layer) drawLegend();
+}
+$('terrain').addEventListener('input', e => setTerrain(+e.target.value));
+const TILT = THREE.MathUtils.degToRad(58);
+function setTilt(on) {
+  tiltTarget = on ? TILT : 0; $('tiltbtn').setAttribute('aria-pressed', String(!!on));
+  if (on && alt() > 0.6) { zoomTarget = 1 + Math.max(minAlt(), 0.12); stopSpin(); }   // tilt shows from about 1,800 km down
+}
+$('tiltbtn').addEventListener('click', () => setTilt(!tiltTarget));
+
+// ---------- pointer readout ----------
+let lastPointer = null, readoutQueued = false;
+canvas.addEventListener('pointermove', e => {
+  lastPointer = { x: e.clientX, y: e.clientY, type: e.pointerType };
+  if (!readoutQueued) { readoutQueued = true; requestAnimationFrame(() => { readoutQueued = false; refreshReadout(); }); }
+});
+canvas.addEventListener('pointerleave', () => { lastPointer = null; refreshReadout(); });
+function domainAt(lat, lon) {
+  if (!domainCodes) return 0;
+  const { arr, w, h } = domainCodes;
+  const x = Math.min(w - 1, Math.floor((lon + 180) / 360 * w)), y = Math.min(h - 1, Math.floor((90 - lat) / 180 * h));
+  return arr[(y * w + x) * 4] / 255;
+}
+function hideTip() { $('tip').hidden = true; $('barmark').hidden = true; }
+function showTip(r, idx) {
+  const tip = $('tip'), m = cur();
+  if (!lastPointer || lastPointer.type === 'touch' || downAt) { hideTip(); return; }
+  let t, txt = `${fmtValue(r)} ${layer.units}`, col;
+  if (ui.mode === 'departure') {
+    const rf = refAt(idx); if (rf === null) { hideTip(); return; }
+    t = 0.5 + 0.5 * (r.v - rf) / m.anom; col = lutRgb(m.cmapDiv, clamp01(t));
+    txt += ` · ${isLogL() ? `${ratioLabel(r.v - rf)} mean` : `${fmtSig(toVal(r.v) - toVal(rf))} from mean`}`;
+  } else { t = colT(r.v); col = lutRgb(m.cmap, clamp01(t)); }
+  tip.innerHTML = `<i style="background:${col}"></i>${txt}`; tip.hidden = false;
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  const x = lastPointer.x + 16 + tw > innerWidth - 8 ? lastPointer.x - 12 - tw : lastPointer.x + 16;
+  const y = lastPointer.y + 18 + th > innerHeight - 8 ? lastPointer.y - 12 - th : lastPointer.y + 18;
+  tip.style.left = `${x}px`; tip.style.top = `${y}px`;
+  const bm = $('barmark'); bm.hidden = false; bm.style.left = `${(clamp01(t) * 100).toFixed(2)}%`;
+}
+function refreshReadout() {
+  const ro = $('readout');
+  if (!layer || !lastPointer) { ro.innerHTML = '<span class="k">Hover over the globe to read a value.</span>'; hideTip(); return; }
+  const hit = pickSurface(lastPointer.x, lastPointer.y);
+  if (!hit) { ro.innerHTML = '<span class="k">Hover over the globe to read a value.</span>'; hideTip(); return; }
+  const [lat, lon] = latLonOf(hit);
+  const ll = `${fmtLat(lat)}  ${fmtLon(lon)}`;
+  let idx = -1, where = '';
+  if (isNet()) {
+    idx = nearestRiver(lat, lon, Math.max(2, kmPerPx() * 9), riverU.uMinUpa.value - 0.12);
+    if (idx >= 0) where = `<br><span class="k">river cell, ${fmtKm2(10 ** NET.upa[idx])} upstream, ${Math.round(NET.dist[idx]).toLocaleString('en-US')} km to the outlet</span>`;
+  } else idx = pinTarget(layer, { lat, lon, k: -1 });
+  const r = idx >= 0 ? interpCodes(frameCodes(idx)) : { st: 'none' };
+  let val;
+  if (r.st === 'ok') {
+    val = `<span class="v">${fmtValue(r)}</span> ${layer.units}`;
+    if (ui.mode === 'departure') { const rf = refAt(idx); if (rf !== null) val += ` <span class="k">·</span> ${isLogL() ? `${ratioLabel(r.v - rf)} the mean of ${fmtSig(toVal(rf))}` : `${fmtSig(toVal(r.v) - toVal(rf))} from the mean`}`; }
+  } else if (r.st === 'dry') val = `<span class="k">no value (less than ${man.dry_mm} mm of water, or overflow)</span>`;
+  else if (lat < man.grid.S) val = '<span class="k">south of the model grid</span>';
+  else if (isNet()) val = domainAt(lat, lon) > 0.5 ? `<span class="k">no river drawn here at this zoom</span>` : '<span class="k">ocean or outside the model domain</span>';
+  else val = '<span class="k">ocean or outside the model domain</span>';
+  const hm = exagR() ? ` · ${Math.round(terrainH(lat, lon)).toLocaleString('en-US')} m` : '';
+  ro.innerHTML = `<span class="k">${ll}${hm}</span><br>${val}${where}`;
+  if (r.st === 'ok') showTip(r, idx); else hideTip();
+}
+
+// ---------- controls ----------
+function play(on) {
+  if (on === playing) return;
+  playing = on;
+  $('play').textContent = on ? '❚❚' : '▶'; $('play').setAttribute('aria-label', on ? 'Pause' : 'Play');
+  if (on && tf >= man.dates.length - 1) tf = 0;
+}
+$('play').addEventListener('click', () => play(!playing));
+$('day').addEventListener('input', e => { play(false); tf = parseFloat(e.target.value); });
+$('spin').addEventListener('change', e => { controls.autoRotate = e.target.checked; });
+$('grat').addEventListener('change', () => { lastCam = ''; });
+$('opacity').addEventListener('input', e => { globeU.uOpacity.value = e.target.value / 100; $('opacity-out').textContent = `${e.target.value} %`; });
+$('shade').addEventListener('input', e => { globeU.uShade.value = e.target.value / 100; $('shade-out').textContent = `${e.target.value} %`; });
+$('coast').addEventListener('change', e => { globeU.uCoast.value = e.target.checked ? 0.5 : 0; });
+$('smooth').addEventListener('change', e => { globeU.uSmooth.value = e.target.checked ? 1 : 0; });
+$('smootht').addEventListener('change', () => { shown = null; });
+$('iso').addEventListener('change', () => { updateIso(); drawLegend(); });
+$('flow').addEventListener('change', e => { riverU.uFlow.value = e.target.checked ? 1 : 0; drawLegend(); });
+$('rivers').addEventListener('change', () => { updateHighlights(); drawLegend(); });
+$('rlo').addEventListener('input', e => { const m = cur(); setRange(Math.min(parseFloat(e.target.value), m.range[1] - layer.quant_step * 4), m.range[1]); });
+$('rhi').addEventListener('input', e => { const m = cur(); setRange(m.range[0], Math.max(parseFloat(e.target.value), m.range[0] + layer.quant_step * 4)); });
+$('reset').addEventListener('click', () => { const m = cur(); m.range = layer.display.slice(); syncLegendControls(); setUniformsForLayer(); drawLegend(); drawHist(); drawChart(); });
+$('anom').addEventListener('input', e => { cur().anom = ANOM_STEPS[+e.target.value]; syncLegendControls(); setUniformsForLayer(); drawLegend(); refreshReadout(); updatePinValues(); });
+$('cmap').addEventListener('change', e => { const m = cur(); if (ui.mode === 'departure') m.cmapDiv = e.target.value; else m.cmap = e.target.value; setUniformsForLayer(); drawLegend(); drawHist(); drawChart(); });
+function setMode(md) { ui.mode = md; shown = null; makeSeg($('mode'), MODES, md, setMode); setUniformsForLayer(); syncLegendControls(); drawLegend(); drawHist(); refreshReadout(); updatePinValues(); }
+const MODES = [['value', 'Concentration'], ['departure', 'Departure from the mean']];
+const compLabel = c => (man.layers.find(l => l.compartment === c) || {}).compartment_label || c;
+function setComp(c) { comp = c; makeSeg($('comp'), man.compartments.map(x => [x, compLabel(x)]), comp, setComp); loadLayer(); }
+function setCollapsed(c) {
+  $('panel').classList.toggle('collapsed', c);
+  $('collapse').textContent = c ? 'Show controls' : 'Hide controls';
+  $('collapse').setAttribute('aria-expanded', String(!c));
+  lastCam = ''; if (layer) { drawLegend(); drawHist(); }
+}
+$('collapse').addEventListener('click', () => setCollapsed(!$('panel').classList.contains('collapsed')));
+if (matchMedia('(max-width: 720px)').matches) setCollapsed(true);
+$('zin').addEventListener('click', () => zoomBy(0.5));
+$('zout').addEventListener('click', () => zoomBy(2));
+let homeDir = dirFromLatLon(18, 14), homeDist = 3.1;
+function goHome() { dirTarget = homeDir.clone(); zoomTarget = homeDist; stopSpin(); }
+$('home').addEventListener('click', goHome);
+function toggleHelp(force) { const h = $('help'), on = force ?? h.hidden; h.hidden = !on; $('helpbtn').setAttribute('aria-expanded', String(on)); }
+$('helpbtn').addEventListener('click', () => toggleHelp());
+function flip(id) { const c = $(id); if (c.disabled) return; c.checked = !c.checked; c.dispatchEvent(new Event('change')); }
+window.addEventListener('keydown', e => {
+  if (!man || e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input[type=checkbox], button, summary, select')) return;
+  const n = man.dates.length;
+  if (e.code === 'Space') { e.preventDefault(); play(!playing); }
+  else if (e.key === '+' || e.key === '=') zoomBy(0.6);
+  else if (e.key === '-' || e.key === '_') zoomBy(1 / 0.6);
+  else if (e.key === '0') goHome();
+  else if (e.key === '?') toggleHelp();
+  else if (e.key === 'Escape') { if (!$('help').hidden) toggleHelp(false); else if (tour) endTour(); else if (pins.length) { pins = []; pinsChanged(); } }
+  else if (e.key === 't' || e.key === 'T') { if (tour) endTour(); else startTour(); }
+  else if (e.key === 'p' || e.key === 'P') setPresent(!document.body.classList.contains('present'));
+  else if (e.key === 'v' || e.key === 'V') setTilt(tiltTarget ? 0 : 1);
+  else if (e.key === 'd' || e.key === 'D') setMode(ui.mode === 'value' ? 'departure' : 'value');
+  else if (e.key === 'i' || e.key === 'I') flip('iso');
+  else if (e.key === 'g' || e.key === 'G') flip('grat');
+  else if (e.key === 'f' || e.key === 'F') flip('flow');
+  else if (e.key === 'r' || e.key === 'R') flip('rivers');
+  else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+    if (e.target.type === 'range') return;
+    e.preventDefault(); play(false);
+    const base = Math.round(tf);
+    tf = (base + (e.key === 'ArrowRight' ? 1 : n - 1)) % n;
+  }
+});
+function makeSeg(box, items, current, onPick) {
+  box.innerHTML = '';
+  items.forEach(([val, txt, disabled]) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = txt; b.setAttribute('aria-pressed', String(val === current));
+    if (disabled) { b.disabled = true; b.title = 'Not available for this layer or build'; }
+    b.addEventListener('click', () => { [...box.children].forEach(c => c.setAttribute('aria-pressed', 'false')); b.setAttribute('aria-pressed', 'true'); onPick(val); });
+    box.appendChild(b);
+  });
+}
+function updateViewInfo() {
+  const [la, lo] = latLonOf(camera.position);
+  const km = Math.round(alt() * EARTH_KM);
+  const t = `${fmtLat(Math.round(la * 10) / 10)} ${fmtLon(Math.round(lo * 10) / 10)} · ${km.toLocaleString('en-US')} km`;
+  if ($('viewinfo').textContent !== t) $('viewinfo').textContent = t;
+  const kpp = kmPerPx(), target = 90 * kpp, p10 = Math.pow(10, Math.floor(Math.log10(target)));
+  const sk = [5, 2, 1].map(m => m * p10).find(v => v <= target) || p10;
+  const st = `${sk >= 1 ? sk.toLocaleString('en-US') : sk} km`;
+  if ($('scalebar-txt').textContent !== st) $('scalebar-txt').textContent = st;
+  $('scalebar-bar').style.width = `${(sk / kpp).toFixed(1)}px`;
+}
+function resize() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / Math.max(h, 1); camera.updateProjectionMatrix();
+  lastCam = '';
+  if (man && layer) { drawChart(); drawLegend(); drawHist(); placeMonths(); }
+}
+window.addEventListener('resize', resize);
+const dockEl = document.querySelector('.dock');
+new ResizeObserver(() => { document.documentElement.style.setProperty('--dock', `${Math.round(dockEl.getBoundingClientRect().height)}px`); lastCam = ''; }).observe(dockEl);
+
+// ---------- start ----------
+async function init() {
+  try { man = await (await fetch('manifest.json')).json(); }
+  catch (err) {
+    statusEl.textContent = location.protocol === 'file:'
+      ? 'Browsers block reading data from a page opened as a file. In this folder run: python3 -m http.server 8766, then open http://127.0.0.1:8766/'
+      : 'Could not load manifest.json: this page needs manifest.json and tex/ next to it (made by make_globe_textures.py)';
+    return;
+  }
+  if (man.format !== 'globe-scalar-1') { statusEl.textContent = 'This page needs data written by the current make_globe_textures.py (format globe-scalar-1).'; return; }
+  const n = man.dates.length;
+  const bb = man.data_bbox;
+  const global = !bb || (bb[1] - bb[0] > 300 && bb[3] - bb[2] > 100);
+  $('headline').textContent = global ? 'Global nitrogen' : 'Nitrogen, test domain';
+  $('period').textContent = `${fmtDate(isoMs(man.dates[0]))} – ${fmtDate(isoMs(man.dates[n - 1]))}`;
+  const step = n > 1 ? Math.round((isoMs(man.dates[1]) - isoMs(man.dates[0])) / 864e5) : 0;
+  const every = step === 7 ? 'weekly' : step === 1 ? 'daily' : step ? `${step}-day` : '';
+  const facts = [];
+  if (man.ncells) facts.push(`<span><b>${man.ncells.toLocaleString('en-US')}</b> land cells</span>`);
+  if (man.cell_deg) facts.push(`<span><b>${+man.cell_deg.toFixed(3)}°</b> grid</span>`);
+  if (man.network) facts.push(`<span><b>${man.network.n.toLocaleString('en-US')}</b> river cells</span>`);
+  facts.push(`<span><b>${n}</b> ${every} outputs</span>`);
+  if (!global && bb) facts.push(`<span>${fmtBox(bb)} only, not global</span>`);
+  $('facts').innerHTML = facts.join('');
+  globeU.uSouth.value = man.grid && man.grid.S > -89.9 ? man.grid.S : -90;
+  if (global) {
+    const aspect = canvas.clientWidth / Math.max(canvas.clientHeight, 1);
+    homeDist = Math.min(Math.max(1.12 / (Math.tan(FOV2) * Math.min(aspect, 1)), 3.1), 5.2);
+  } else {
+    homeDir = dirFromLatLon((bb[2] + bb[3]) / 2, (bb[0] + bb[1]) / 2);
+    homeDist = Math.max(bb[1] - bb[0], bb[3] - bb[2]) < 30 ? 1.5 : 2.2;
+    document.title = 'Nitrogen Globe (test domain)';
+  }
+  camera.position.copy(homeDir.clone().multiplyScalar(reduceMotion ? homeDist : homeDist * 1.9));
+  zoomTarget = homeDist;
+  comp = man.compartments.includes('CHANNEL') ? 'CHANNEL' : man.compartments[0];
+  spec = man.species.includes('NO3-N') ? 'NO3-N' : man.species[0];
+  makeSeg($('comp'), man.compartments.map(c => [c, compLabel(c)]), comp, setComp);
+  makeSeg($('spec'), man.species.map(s => [s, s]), spec, v => { spec = v; loadLayer(); });
+  makeSeg($('mode'), MODES, 'value', setMode);
+  makeSeg($('speed'), [[0.5, '0.5×'], [1, '1×'], [2, '2×'], [4, '4×']], 1, v => { speed = v; });
+  makeSeg($('prof-tabs'), [['profile', 'Main stem'], ['time', 'Over time'], ['area', 'vs upstream area']], 'profile', v => { profTab = v; profHover = -1; drawProfile(); });
+  const hasSat = !!(man.satellite && man.satellite.files && man.satellite.files.length);
+  makeSeg($('base'), [['relief', 'Relief'], ['satellite', 'Satellite', !hasSat]], 'relief', setBase);
+  $('day').max = n - 1;
+  placeMonths();
+  statusEl.textContent = 'Loading base maps and river network…';
+  const jobs = [
+    loadImageTexture(man.domain.file).then(t => { globeU.uDomain.value = t; }),
+    loadCodes(man.domain.file).then(r => { domainCodes = r; }),
+    man.relief ? loadImageTexture(man.relief.file).then(t => { globeU.uRelief.value = t; globeU.uHasRelief.value = 1; }) : null,
+    loadNetwork(),
+    man.terrain ? loadCodes(man.terrain.file).then(r => {
+      const T = man.terrain, W1 = T.nx + 1, H1 = T.ny + 1;
+      if (r.w !== W1 || r.h !== H1) throw new Error(`${T.file} (size)`);
+      const f = new Float32Array(W1 * H1);
+      for (let i = 0; i < W1 * H1; i++) f[i] = r.arr[4 * i] * 256 + r.arr[4 * i + 1] - T.offset_m;
+      const tex = new THREE.DataTexture(f, W1, H1, THREE.RedFormat, THREE.FloatType);
+      tex.magFilter = tex.minFilter = THREE.NearestFilter; tex.generateMipmaps = false; tex.flipY = false; tex.needsUpdate = true;
+      const small = matchMedia('(max-width: 720px)').matches;
+      TER = { arr: f, nx: T.nx, ny: T.ny, d: T.node_deg, stride: small ? 2 : 1, max: T.max_m, tex };
+      globeU.uTer.value = tex;
+    }) : null,
+  ];
+  await Promise.all(jobs.filter(Boolean)).catch(err => { statusEl.hidden = false; statusEl.textContent = `Could not load ${err.message}`; });
+  if (TER) { setRiverHeights(); $('terrain-row').hidden = false; setTerrain(+$('terrain').value); }
+  if (man.hovmoller) { $('hovbtn').hidden = false; setHov(innerHeight >= 760 && innerWidth > 720); }
+  setBase('relief');
+  resize();
+  loadLayer();
+  introT = reduceMotion ? 1 : 0; introStart = performance.now();
+  if (!reduceMotion && global) { controls.autoRotate = true; $('spin').checked = true; }
+}
+resize();
+init();
+
+// ---------- frame loop ----------
+const vp = new THREE.Vector2();
+let tPrev = performance.now();
+renderer.setAnimationLoop(() => frame(performance.now()));
+function frame(now) {
+  const dt = Math.min(0.1, Math.max(0, (now - tPrev) / 1000)); tPrev = now;
+  flightStep(now);
+  navStep();
+  controls.update();
+  const a0 = alt();
+  camera.near = Math.max(0.0008, (a0 - (TER ? TER.max * exagR() : 0)) * 0.35); camera.far = camera.position.length() + 2.5; camera.updateProjectionMatrix();
+  riverU.uR.value = 1 + Math.min(0.0006, Math.max(0.00012, a0 * 0.004));
+  if (man && layer) {
+    const ready = applyFrame();
+    const n = man.dates.length;
+    if (playing && ready) { tf += dt * 1.6 * speed; if (tf > n - 1) tf = 0; }
+    const sv = (Math.round(tf * 100) / 100).toString(); if ($('day').value !== sv && document.activeElement !== $('day')) $('day').value = sv;
+    if (introT < 1) introT = introStart ? Math.min(1, (now - introStart) / 2600) : 0;
+    const ease = 1 - Math.pow(1 - introT, 3);
+    globeU.uFade.value = Math.min(1, introT * 2.2);
+    riverU.uFade.value = 1;
+    const kpp = kmPerPx();
+    const target = man.network ? minUpaFor(kpp) : 7;
+    riverU.uMinUpa.value = target + (6.8 - target) * (1 - ease);
+    riverU.uTime.value = (riverU.uTime.value + dt * 0.5) % 1000;
+    riverU.uDashKm.value = Math.pow(2, Math.round(Math.log2(Math.max(0.5, kpp * 34))));
+  }
+  renderer.getDrawingBufferSize(vp);
+  riverU.uViewport.value.copy(vp);
+  tiltNow += (tiltTarget - tiltNow) * Math.min(1, dt * 5);
+  updateViewCam();
+  riverU.uCam.value.copy(viewCam.position);
+  const showRivers = !!NET && layer && (isNet() || $('rivers').checked);
+  for (const m of riverMeshes) m.visible = showRivers;
+  renderer.render(scene, viewCam);
+  updateLabels();
+  updatePinMarkers();
+  updatePmark();
+  hovLatMark();
+  updateViewInfo();
+}
+window.__globe = { get man() { return man; }, get layer() { return layer; }, get shown() { return shown; }, get NET() { return NET; }, get pins() { return pins; }, get TER() { return TER; }, get tour() { return tour; },
+  riverU, globeU, camera, viewCam, setTilt, startTour, endTour, tourGo, setTerrain, setPresent, setHov, flyTo, findOutlet, addPinAt, terrainH, envs, series,
+  setTf: v => { tf = v; }, fly: (lat, lon, d) => { dirTarget = dirFromLatLon(lat, lon); zoomTarget = d; stopSpin(); endFlight(); },
+  step: n => { for (let i = 0; i < n; i++) frame(tPrev + 16.7); } };
+</script>

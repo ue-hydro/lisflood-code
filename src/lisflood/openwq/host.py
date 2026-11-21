@@ -54,8 +54,12 @@ def _load_module():
     if env:
         candidates.append(Path(env))
     candidates.append(HYDROLINK_DIR)
+    import importlib.machinery
     for d in candidates:
-        files = sorted(d.glob('openwq_py*.so')) + sorted(d.glob('openwq_py*.pyd')) if d.is_dir() else []
+        # only builds for THIS interpreter/platform (a Linux .so and a macOS .so
+        # can sit side by side when the module is built in Docker and natively)
+        files = ([d / ('openwq_py' + suf) for suf in importlib.machinery.EXTENSION_SUFFIXES
+                  if (d / ('openwq_py' + suf)).is_file()] if d.is_dir() else [])
         if files:
             spec = importlib.util.spec_from_file_location('openwq_py', files[0])
             mod = importlib.util.module_from_spec(spec)
