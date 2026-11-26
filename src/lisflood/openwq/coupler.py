@@ -61,6 +61,27 @@ sub-steps. Per sub-step: volumes interpolated linearly between the start and
 end of the LISFLOOD step, fluxes = step total / substeps, source volume for
 the exported fraction = start-of-sub-step volume (openWQ convention), volume at
 time_end = end-of-sub-step volume (so output concentration = mass / volume).
+
+Channel transport (``channel_scheme``): openWQ's native advection is explicit
+upwind (a cell exports min(Q dt/V, 1) of its START-of-step mass and receives
+mass only at the end of the step), which is consistent only for a Courant
+number Q dt/V <= 1. LISFLOOD's kinematic routing is implicit and moves water
+through many small channel cells per routing sub-step (median daily Q/V ~10,
+p99 ~60 in the Columbia), so with the explicit scheme the mass that arrives in
+a cell cannot leave in the same sub-step, piles up in the cell's small volume
+and inflates concentrations by up to the Courant number (dissolved O2 above
+saturation, NO3 x2 at typical stations), and solute travels one cell per
+sub-step. The default ``"implicit"`` scheme therefore routes the channel with
+backward-Euler upwind weights, issued as openWQ moves: of the mass that enters
+channel cell j in a sub-step (the cell's own start-of-step mass, or the
+lateral inflow from SOIL_SUB / UPPER_ZONE / LOWER_ZONE), the fraction
+V_j/(V_j+F_j) stays, F_down_j/(V_j+F_j) passes to the downstream cell (and is
+split there in the same way) and F_loss_j/(V_j+F_j) leaves the domain
+(withdrawals, transmission losses, and the downstream share at outlets/pits),
+with V_j the end-of-sub-step volume and F_j = F_down_j + F_loss_j. This is
+mass-conserving, keeps concentrations within the range of the inflows at any
+Courant number, and lets solute travel as far per sub-step as the water does.
+``"explicit"`` keeps the plain openWQ transfers (runs made before this change).
 """
 from __future__ import annotations
 
@@ -130,6 +151,38 @@ TRANSFERS = [
 ]
 INFLOW_KEY = "INFIL_TOPA"          # carrier of the topsoil external water flux
 FLUX_KEYS = [INFLOW_KEY] + [t[0] for t in TRANSFERS]
+
+# Channel transfers routed by the implicit cascade (channel_scheme="implicit"):
+# lateral inflows into CHANNEL (flux keys grouped by source compartment) and the
+# channel's outflows (downstream routing, withdrawals, transmission losses).
+CHANNEL_INFLOWS = [("SOIL_SUB", ("SUB_CH",)), ("UPPER_ZONE", ("UZ_CH",)),
+                   ("LOWER_ZONE", ("LZ_CH", "LZ_ABS_CH"))]
+CHANNEL_LOSSES = ("CH_ABS_OUT", "CH_TRANS_OUT")
+CASCADE_KEYS = {"SUB_CH", "UZ_CH", "LZ_CH", "LZ_ABS_CH", "CH_DOWN"} | set(CHANNEL_LOSSES)
+CASCADE_TOL = 1e-4        # deposit the travelling share where it is once < this fraction would go on
+CASCADE_KMAX = 5000       # safety cap on cells followed per sub-step (remainder stays there)
+
+# Dependency variables declared to openWQ (symbols the BGC templates can use in
+# their kinetics). All come from LISFLOOD's daily mean air temperature Tavg
+# [deg C], the only temperature LISFLOOD has; no state is kept, so they are the
+# same in the in-process run (option OpenWQ), the replay and a forecast run.
+#   T        air temperature [deg C]      e.g. nitrogen_simple.json: 1.08^(T - 20)
+#   Tair_K   air temperature [K]          e.g. RN templates: stream temperature
+#                                         a_Tw + b_Tw*(Tair_K - 273.15)
+#   Tsoil_K  air temperature not below    LISFLOOD has no soil thermal model, so
+#            0 deg C [K]                  soil and groundwater reactions use the
+#                                         daily air temperature with the 0 deg C
+#                                         floor the RN templates also apply to
+#                                         plant uptake, O2 saturation and stream
+#                                         temperature
+T_K0 = 273.15
+DEPENDENCIES = ["T", "Tair_K", "Tsoil_K"]
+
+
+def temperature_dependencies(tavg_degc):
+    """Values of DEPENDENCIES (same order) from LISFLOOD's Tavg [deg C]."""
+    t = np.ascontiguousarray(tavg_degc, dtype=float)
+    return [t, np.ascontiguousarray(t + T_K0), np.ascontiguousarray(np.maximum(t, 0.0) + T_K0)]
 
 
 # ---------------------------------------------------------------------------
@@ -263,11 +316,17 @@ class LisfloodOpenWQCoupler:
         first EWF of the generated master (None if it declares none).
     substeps : OpenWQ sub-steps per LISFLOOD step; default = LISFLOOD's
         channel-routing sub-steps (var.NoRoutSteps), 1 if unknown.
+    channel_scheme : "implicit" (default, backward-Euler upwind cascade, see the
+        module docstring) or "explicit" (plain openWQ transfers, earlier runs).
     """
 
     def __init__(self, var, master_json, host_factory=None, ext_flux_names=None,
-                 topsoil_ewf="__default__", substeps=None):
+                 topsoil_ewf="__default__", substeps=None, channel_scheme="implicit"):
+        if channel_scheme not in ("implicit", "explicit"):
+            raise ValueError("channel_scheme must be 'implicit' or 'explicit'")
         self.var = var
+        self.channel_scheme = channel_scheme
+        self.cascade_out = None  # implicit: per source compartment, fraction of its start mass leaving via the channel
         self.master_json = os.path.abspath(str(master_json))
         # openWQ resolves the generated (relative) paths and writes openwq_out/
         # relative to the CWD: the coupler enters this folder around its openWQ
@@ -280,7 +339,7 @@ class LisfloodOpenWQCoupler:
         self._host = None
         self._icmp = {}
         self._iewf = {}
-        self._idep_T = None
+        self._idep = []
         self._primed = False
         self._v_start = None
         self._restore = None     # state file to restore right after priming (chunked runs)
@@ -300,7 +359,15 @@ class LisfloodOpenWQCoupler:
         if self.host_factory is not None:
             make_host = self.host_factory
         else:
-            import openwq_py  # pybind11 module built from OpenWQ_hydrolink + openwq/
+            # pybind11 module built from OpenWQ_hydrolink + openwq/ into this
+            # folder (src/lisflood/openwq). replay.py puts the folder on the path
+            # itself; inside LISFLOOD (option OpenWQ) it is not, so add it here.
+            try:
+                import openwq_py
+            except ModuleNotFoundError:
+                import sys
+                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                import openwq_py
             make_host = openwq_py.Host
         self._ncells = int(ncells)
         self._dst_ix = np.ascontiguousarray(dst_ix, dtype=np.int32)
@@ -317,8 +384,8 @@ class LisfloodOpenWQCoupler:
                 self._icmp[name] = self._host.add_compartment(name, self._ncells, 1, 1)
             for name in names:
                 self._iewf[name] = self._host.add_ext_flux(name, self._ncells, 1, 1)
-            # BGC templates may use "T" (deg C) in their kinetics, e.g. 1.08^(T - 20)
-            self._idep_T = self._host.add_depend("T", self._ncells, 1, 1)
+            # temperatures the BGC templates may use in their kinetics (DEPENDENCIES)
+            self._idep = [self._host.add_depend(name, self._ncells, 1, 1) for name in DEPENDENCIES]
             self._host.init()
 
     def _sub_times(self, date_end):
@@ -337,22 +404,27 @@ class LisfloodOpenWQCoupler:
         for c, arr in vols.items():
             self._host.set_water_volume_array(self._icmp[c], arr)
 
+    def _set_depends(self, deps):
+        for idep, arr in zip(self._idep, deps):
+            self._host.set_depend_array(idep, arr)
+
     # -- core: one LISFLOOD step ----------------------------------------------
     def advance(self, fields, on_substep=None):
         """Replay one LISFLOOD step (fields from ``collect_fields``) in OpenWQ.
         ``on_substep(k, vk, flux)`` (optional, diagnostics) is called after each
-        sub-step's time_start, before its transfers."""
+        sub-step's transfers are registered and before its time_end, when the
+        host's masses are still the start-of-sub-step masses."""
         n_sub = self._n_sub
         t0, tsub = self._sub_times(fields["date"])
         v0 = {c: fields["V0_" + c] for c in COMPARTMENTS}
         v1 = {c: fields["V1_" + c] for c in COMPARTMENTS}
-        T = np.ascontiguousarray(fields["T"], dtype=float)
+        deps = temperature_dependencies(fields["T"])
         with self._in_case():
             if not self._primed:
                 # OpenWQ ignores fluxes on its first interaction step: seed the
                 # initial conditions (IC conc x volume) at the start of the run.
                 self._set_volumes(v0)
-                self._host.set_depend_array(self._idep_T, T)
+                self._set_depends(deps)
                 self._host.time_start(*self._tt(t0))
                 self._host.time_end(*self._tt(t0))
                 self._primed = True
@@ -362,31 +434,101 @@ class LisfloodOpenWQCoupler:
             I = self._icmp
             flux = {k: np.ascontiguousarray(fields["F_" + k] / n_sub) for k in FLUX_KEYS}
             clamp = 0
+            kmax = 0
             for k, t in enumerate(tsub):
                 a0, a1 = k / n_sub, (k + 1) / n_sub
                 vk = {c: np.ascontiguousarray(v0[c] + a0 * (v1[c] - v0[c])) for c in COMPARTMENTS}
                 vk1 = {c: np.ascontiguousarray(v0[c] + a1 * (v1[c] - v0[c])) for c in COMPARTMENTS}
                 tt = self._tt(t)
                 self._set_volumes(vk)
-                self._host.set_depend_array(self._idep_T, T)
+                self._set_depends(deps)
                 self._host.time_start(*tt)
-                if on_substep is not None:
-                    on_substep(k, vk, flux)
                 if self._topsoil_ewf is not None:
                     self._host.inflow_array(self._topsoil_ewf, I["SOIL_TOP_A"],
                                             flux[INFLOW_KEY], *tt)
+                clamp = max(clamp, int(np.count_nonzero(flux["CH_DOWN"] > vk["CHANNEL"])))
+                implicit = self.channel_scheme == "implicit"
                 for key, src, dst in TRANSFERS:
+                    if implicit and key in CASCADE_KEYS:
+                        continue
                     if key == "CH_DOWN":
                         self._host.move_array_to(I[src], I[dst], self._dst_ix,
                                                  flux[key], vk[src], *tt)
-                        clamp = max(clamp, int(np.count_nonzero(flux[key] > vk[src])))
                     else:
                         self._host.move_array(I[src], -1 if dst is None else I[dst],
                                               flux[key], vk[src], *tt)
+                if implicit:
+                    kmax = max(kmax, self._route_channel_implicit(flux, vk, vk1, tt))
+                if on_substep is not None:
+                    # transfers only register mass changes (applied at time_end), so the
+                    # host's masses are still the start-of-sub-step masses here
+                    on_substep(k, vk, flux)
                 self._set_volumes(vk1)
                 self._host.time_end(*tt)
         self.diag.append({"date": "%04d-%02d-%02d" % tuple(fields["date"][:3]),
-                          "substeps": n_sub, "channel_cfl_gt1_cells": clamp})
+                          "substeps": n_sub, "channel_cfl_gt1_cells": clamp,
+                          "channel_scheme": self.channel_scheme, "cascade_max_cells": kmax})
+
+    # -- implicit channel routing ------------------------------------------
+    def _route_channel_implicit(self, flux, vk, vk1, tt):
+        """Route one sub-step through the channel network with backward-Euler
+        upwind weights (module docstring), as openWQ moves of fractions of the
+        sources' start-of-step mass. Returns the number of cells followed."""
+        h, I, dst = self._host, self._icmp, self._dst_ix
+        ich = I["CHANNEL"]
+        V = np.maximum(vk1["CHANNEL"], 0.0)
+        f_down = np.maximum(flux["CH_DOWN"], 0.0)
+        f_loss = np.zeros_like(V)
+        for key in CHANNEL_LOSSES:
+            f_loss += np.maximum(flux[key], 0.0)
+        den = V + f_down + f_loss
+        with np.errstate(divide="ignore", invalid="ignore"):
+            a = np.where(den > 0, f_down / den, 0.0)
+            b = np.where(den > 0, f_loss / den, 0.0)
+        pit = dst < 0
+        stay = np.clip(1.0 - a - b, 0.0, 1.0)
+        loss = np.where(pit, a + b, b)           # downstream share leaves at outlets/pits
+        pas = np.where(pit, 0.0, a)
+        # sources injecting into channel cell i: (compartment index, fraction of its
+        # start mass entering the channel this sub-step, its start volume)
+        srcs = [(ich, np.ones_like(V), np.maximum(vk["CHANNEL"], 0.0))]
+        for comp, keys in CHANNEL_INFLOWS:
+            vs = np.maximum(vk[comp], 0.0)
+            fl = sum(np.maximum(flux[key], 0.0) for key in keys)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                f = np.where(vs > 0, np.minimum(fl / vs, 1.0), 0.0)
+            srcs.append((I[comp], f, vs))
+        # k = 0: the share that stays in the cell it entered (lateral sources only;
+        # the channel's own staying share is simply not moved)
+        for icmp, f, vs in srcs[1:]:
+            h.move_array(icmp, ich, np.ascontiguousarray(f * stay * vs), vs, *tt)
+        lsum = loss.copy()                       # unit-mass fraction leaving the domain
+        P = pas.copy()                           # unit-mass fraction still travelling
+        D = dst.copy()                           # cell reached after k steps (-1: gone)
+        k = 0
+        while True:
+            act = (P > 0.0) & (D >= 0)
+            if not act.any():
+                break
+            k += 1
+            j = np.where(D >= 0, D, 0)
+            nxt = P * pas[j]
+            # the share that would travel on is deposited here once it is negligible
+            # (or at the safety cap), so every unit of mass ends in a cell or outside
+            tail = (nxt <= CASCADE_TOL) | (k >= CASCADE_KMAX)
+            w = np.where(act, np.where(tail, P * (stay[j] + pas[j]), P * stay[j]), 0.0)
+            Dm = np.ascontiguousarray(np.where(act, D, -1), dtype=np.int32)
+            for icmp, f, vs in srcs:
+                h.move_array_to(icmp, ich, Dm, np.ascontiguousarray(f * w * vs), vs, *tt)
+            lsum += np.where(act, P * loss[j], 0.0)
+            P = np.where(act & ~tail, nxt, 0.0)
+            D = np.where(act & ~tail, dst[j], -1).astype(np.int32)
+        self.cascade_out = {}
+        for icmp, f, vs in srcs:
+            out = f * lsum
+            h.move_array(icmp, -1, np.ascontiguousarray(out * vs), vs, *tt)
+            self.cascade_out[icmp] = out
+        return k
 
     # -- state carry-over (chunked runs) ----------------------------------
     def save_state(self, path):

@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)                      # coupler.py + openwq_py*.so live here
 
 import numpy as np                            # noqa: E402
-from coupler import (LisfloodOpenWQCoupler, TRANSFERS, INFLOW_KEY,   # noqa: E402
+from coupler import (LisfloodOpenWQCoupler, TRANSFERS, INFLOW_KEY, CASCADE_KEYS,   # noqa: E402
                      read_owq_json)
 
 
@@ -53,6 +53,9 @@ def main():
     ap.add_argument("--last-step", type=int, default=None, help="last recorded step to replay (inclusive)")
     ap.add_argument("--state-in", default=None, help="openWQ state saved by a previous chunk (restored after priming)")
     ap.add_argument("--state-out", default=None, help="save the openWQ state after the last step here")
+    ap.add_argument("--channel-scheme", choices=["implicit", "explicit"], default="implicit",
+                    help="channel transport: implicit backward-Euler cascade (default) or plain explicit "
+                         "openWQ transfers (runs made before the implicit scheme)")
     ap.add_argument("--keep-load", action="store_true",
                     help="with --closed: keep the external load (tests the EWF input alone)")
     a = ap.parse_args()
@@ -83,7 +86,7 @@ def main():
     diag_dir = a.diag_dir or a.record_dir
 
     t0 = time.time()
-    cpl = LisfloodOpenWQCoupler(None, a.master_json)
+    cpl = LisfloodOpenWQCoupler(None, a.master_json, channel_scheme=a.channel_scheme)
     cpl.setup(ncells, dst_ix.astype(np.int32), float(st["dtsec"]), substeps=nsub)
     t_setup = time.time() - t0
     host = cpl._host
@@ -122,7 +125,17 @@ def main():
             bud["m_start"] = sum(host.total_mass(j) for j in range(nspec))
         bud["in"] += float(np.sum(flux[INFLOW_KEY])) * sum(ewf_conc.values())
         ic = cpl._icmp
+        implicit = cpl.channel_scheme == "implicit"
+        if implicit and cpl.cascade_out is not None:
+            # channel outflows routed by the implicit cascade: the coupler gives, per
+            # source compartment, the fraction of its start mass that left the domain
+            for icmp, frac in cpl.cascade_out.items():
+                for ich in mobile:
+                    m = host.mass_array(icmp, ich).ravel()
+                    bud["out"] += float(np.sum(frac * np.maximum(m, 0)))
         for key, src in out_keys + [("CH_DOWN", "CHANNEL")]:
+            if implicit and key in CASCADE_KEYS:
+                continue
             with np.errstate(divide="ignore", invalid="ignore"):
                 frac = np.where(vk[src] > 0, flux[key] / vk[src], 1.0)
             frac = np.minimum(frac, 1.0)

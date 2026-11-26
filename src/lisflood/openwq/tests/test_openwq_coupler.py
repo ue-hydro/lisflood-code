@@ -115,10 +115,11 @@ class FakeVar:
         return (np.asarray(self.SoilFraction) * np.asarray(x)).sum(0)
 
 
-def make(tmp_path, var=None, host=FakeHost, names=("LOAD",)):
+def make(tmp_path, var=None, host=FakeHost, names=("LOAD",), scheme="implicit"):
     var = var or FakeVar()
     return var, LisfloodOpenWQCoupler(var, tmp_path / "openWQ_master.json",
-                                      host_factory=host, ext_flux_names=list(names))
+                                      host_factory=host, ext_flux_names=list(names),
+                                      channel_scheme=scheme)
 
 
 def run_one_step(var, c):
@@ -132,8 +133,22 @@ def test_declares_compartments_ewf_and_temperature(tmp_path):
     run_one_step(var, c)
     h = c._host
     assert h.compartments == COMPARTMENTS and h.inited
-    assert h.ext_fluxes == ["LOAD"] and h.depends == ["T"]
+    assert h.ext_fluxes == ["LOAD"] and h.depends == ["T", "Tair_K", "Tsoil_K"]
     assert c._ncells == var.n and c._n_sub == var.NoRoutSteps
+
+
+def test_temperature_dependencies_from_tavg(tmp_path):
+    """T, Tair_K and Tsoil_K (= max(Tavg, 0 C) in K) are set every sub-step."""
+    var = FakeVar()
+    var.Tavg = np.array([-26.0, -0.5, 0.0, 2.3, 15.0])
+    var, c = make(tmp_path, var=var)
+    calls = run_one_step(var, c)
+    deps = [x for x in calls if x[0] == "dep"]
+    assert len(deps) == 3 * (1 + var.NoRoutSteps)             # priming + every sub-step
+    by_idx = {i: a for _, i, a in deps[-3:]}
+    np.testing.assert_array_equal(by_idx[0], var.Tavg)
+    np.testing.assert_allclose(by_idx[1], var.Tavg + 273.15)
+    np.testing.assert_allclose(by_idx[2], [273.15, 273.15, 273.15, 275.45, 288.15])
 
 
 def test_store_volumes_use_lisflood_fraction_weighting():
@@ -163,7 +178,9 @@ def test_downstream_index_pits_leave_domain():
 
 
 def test_substeps_transfers_volumes_and_times(tmp_path):
-    var, c = make(tmp_path)
+    # the plain transfer mapping (explicit channel scheme); the implicit cascade is
+    # tested with a mass-tracking host at the end of this file
+    var, c = make(tmp_path, scheme="explicit")
     calls = run_one_step(var, c)
     N = var.NoRoutSteps
     starts = [x[1] for x in calls if x[0] == "start"]
@@ -191,7 +208,7 @@ def test_substeps_transfers_volumes_and_times(tmp_path):
 
 
 def test_volume_interpolation_and_source_volume(tmp_path):
-    var, c = make(tmp_path)
+    var, c = make(tmp_path, scheme="explicit")
     c.begin_step()
     v0 = store_volumes(var)
     var.ChanM3 = var.ChanM3 * 3.0                    # hydrology changed the channel store
@@ -271,3 +288,100 @@ def test_default_off_is_noop_import():
     import lisflood.openwq as pkg
     importlib.reload(pkg)
     assert hasattr(pkg, "LisfloodOpenWQCoupler")
+
+
+# --------------------------------------------------------------------------- channel transport scheme
+class MassHost(FakeHost):
+    """FakeHost that also tracks one solute's mass like openWQ's native advection:
+    each move exports min(wflux/wsrc, 1) of the source's START-of-step mass, and the
+    changes are applied at time_end (explicit upwind bookkeeping)."""
+    def __init__(self, master_json):
+        super().__init__(master_json)
+        self.mass = {}
+        self.vol = {}
+        self.dm = {}
+        self.out = 0.0
+
+    def add_compartment(self, name, nx, ny=1, nz=1):
+        i = super().add_compartment(name, nx, ny, nz)
+        self.mass[i] = np.zeros(nx)
+        return i
+
+    def set_water_volume_array(self, icmp, arr):
+        self.vol[icmp] = np.array(arr, dtype=float)
+
+    def time_start(self, *t):
+        self.dm = {i: np.zeros_like(m) for i, m in self.mass.items()}
+
+    def _move(self, src, ix, rc, jx, wflux, wsrc):
+        if wflux <= 1e-8 or wsrc <= 1e-8:
+            return
+        q = min(wflux / wsrc, 1.0) * self.mass[src][ix]
+        q = min(q, self.mass[src][ix] + self.dm[src][ix])      # live cap, as openWQ
+        self.dm[src][ix] -= q
+        if rc < 0:
+            self.out += q
+        else:
+            self.dm[rc][jx] += q
+
+    def move_array(self, src, dst, wflux, wsrc, *t):
+        for ix in range(len(wflux)):
+            self._move(src, ix, dst, ix, wflux[ix], wsrc[ix])
+
+    def move_array_to(self, src, dst, dst_ix, wflux, wsrc, *t):
+        for ix in range(len(wflux)):
+            jx = int(dst_ix[ix])
+            self._move(src, ix, -1 if jx < 0 else dst, max(jx, 0), wflux[ix], wsrc[ix])
+
+    def time_end(self, *t):
+        for i in self.mass:
+            self.mass[i] = self.mass[i] + self.dm[i]
+
+    def inflow_array(self, *a):
+        pass
+
+
+def _two_cell_fields(vup=10.0, vdown=1.0, q=4.0):
+    """Two channel cells, upstream (large volume) -> downstream (small volume, outlet),
+    routing flux q per sub-step through both (Courant 0.4 upstream, 4 downstream)."""
+    n = 2
+    f = {"date": np.array([2015, 1, 2, 0, 0]), "T": np.full(n, 5.0)}
+    for c in COMPARTMENTS:
+        f["V0_" + c] = np.full(n, 1.0)
+        f["V1_" + c] = np.full(n, 1.0)
+    f["V0_CHANNEL"] = f["V1_CHANNEL"] = np.array([vup, vdown])
+    for k in ["INFIL_TOPA"] + [t[0] for t in TRANSFERS]:
+        f["F_" + k] = np.zeros(n)
+    f["F_CH_DOWN"] = np.array([q, q])
+    return f
+
+
+def _run_scheme(tmp_path, scheme, conc=1.0):
+    c = LisfloodOpenWQCoupler(None, tmp_path / "openWQ_master.json", host_factory=MassHost,
+                              ext_flux_names=[], channel_scheme=scheme)
+    c.setup(2, np.array([1, -1], dtype=np.int32), 86400.0, substeps=1)
+    f = _two_cell_fields()
+    h = c._host
+    ich = c._icmp["CHANNEL"]
+    c.advance(f)                                       # priming step + one sub-step
+    h.mass[ich] = conc * f["V0_CHANNEL"].copy()        # uniform start concentration
+    h.out = 0.0
+    m0 = h.mass[ich].sum()
+    c.advance(f)
+    return h.mass[ich] / f["V1_CHANNEL"], m0, h.mass[ich].sum() + h.out
+
+
+def test_explicit_channel_inflates_concentration_above_courant_one(tmp_path):
+    cend, m0, m1 = _run_scheme(tmp_path, "explicit")
+    assert m1 == pytest.approx(m0)                     # mass is conserved ...
+    assert cend[1] == pytest.approx(4.0)               # ... but the small cell is at 4x the inflow
+
+
+def test_implicit_channel_bounded_and_conservative(tmp_path):
+    cend, m0, m1 = _run_scheme(tmp_path, "implicit")
+    assert m1 == pytest.approx(m0)
+    assert np.all(cend <= 1.0 + 1e-12)                 # within the range of the inflow
+    # backward-Euler weights: upstream keeps V/(V+q) = 10/14, the outlet keeps 1/5
+    # of its own mass plus 1/5 of what arrives (10 * 4/14)
+    assert cend[0] == pytest.approx(10 / 14)
+    assert cend[1] == pytest.approx(0.2 + 10 * (4 / 14) * 0.2)
